@@ -1,13 +1,22 @@
-# ncorr_2D_cpp
+# CppNCorr
 
-This is the offical repo for the complete C++ port of:
+This is the fork of the official repo for the complete C++ port of [Ncorr_2D_cpp](https://github.com/justinblaber/ncorr_2D_cpp).
 
+In this fork, we have added the following features:
+
+- Update some modules to make it runnable
+- Parallelization using OpenMP
+- Loading of images from a memory-mapped file
+- Manual seeding point picking
+- Smart seeding update on failure
+
+## Build
+
+To build the library, run the following command:
+
+```bash
+./build.sh
 ```
-Ncorr: open-source 2D digital image correlation matlab software
-J Blaber, B Adair, A Antoniou
-Experimental Mechanics 55 (6), 1105-1122
-```
 
-Please cite this paper if you use this software in your research.
+This will create a `libncorr.a` file in the `lib` directory. You can then link this library to your own projects.
 
-Future plans for this code are to write a real command-line executable to help automation and to containerize the code with Docker. Stay tuned!
