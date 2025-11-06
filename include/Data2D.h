@@ -53,7 +53,7 @@ public:
         
     // Operators interface ---------------------------------------------------//
     friend std::ostream& operator<<(std::ostream&, const Data2D&); 
-    friend void imshow(const Data2D&, difference_type delay = -1);  
+    friend void imshow(const Data2D&, difference_type delay);  
     friend bool isequal(const Data2D&, const Data2D&);
     friend void save(const Data2D&, std::ofstream&);
        

@@ -29,6 +29,17 @@ if (COMPILER_SUPPORTS_O3)
 	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 endif()
 
+# Set include directories
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isystem /opt/homebrew/include")
+
+# Find OpenCV
+find_package(OpenCV REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS})
+target_link_libraries(ncorr ${OpenCV_LIBS})
+
+# add -fpermissive flag to allow some non-standard code.
+#SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
+
 # Disable debugging
 ADD_DEFINITIONS(-DNDEBUG)
 
