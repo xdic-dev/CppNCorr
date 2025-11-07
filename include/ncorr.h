@@ -97,6 +97,10 @@ namespace details {
             subregion_nloptimizer& operator=(const subregion_nloptimizer&) = default;  
             subregion_nloptimizer& operator=(subregion_nloptimizer&&) = default;
             ~subregion_nloptimizer() noexcept = default;
+
+            // getters -------------------------------------------------------//
+            const ROI2D::contig_subregion_generator& get_subregion_gen() const { return this->subregion_gen; }
+            
             
             // Additional Constructors ---------------------------------------//         
             // Note: params = {p1, p2, v, u, dv_dp1, dv_dp2, du_dp1, du_dp2, corr_coef, diff_norm}
