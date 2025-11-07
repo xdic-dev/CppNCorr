@@ -18,6 +18,7 @@ cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 # Build library
 echo "Building library..."
+make clean
 make
 
 # Return to previous directory
