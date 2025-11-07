@@ -301,7 +301,7 @@ class Array2D final {
         template <typename T2> 
         friend Array2D<T2, typename allocator_type::template rebind<T2>::other> convert(const Array2D &A, const T2&) { return Array2D<T2, typename allocator_type::template rebind<T2>::other>(A); }
         friend cv::Mat get_cv_img(const Array2D &A, value_type min, value_type max) { return A.this_cv_img(min, max); }
-        friend void imshow(const Array2D &A, difference_type delay = -1) { A.this_imshow(delay); }
+        friend void imshow(const Array2D &A, difference_type delay) { A.this_imshow(delay); }
         friend std::ostream& operator<<(std::ostream &os, const Array2D &A) { return A.this_stream(os); }      
         friend Array2D repmat(const Array2D &A, difference_type rows, difference_type cols) { return A.this_repmat(rows,cols); }    
         friend Array2D pad(const Array2D &A, difference_type padding, PAD pad_type = PAD::ZEROS) { return A.this_pad(padding,pad_type); }    
@@ -2678,91 +2678,157 @@ Array2D<T,T_alloc> Array2D<T,T_alloc>::this_conv_base(const Array2D &kernel, FFT
     // fftw_execute
     std::unique_lock<std::mutex> fftw_lock(details::fftw_mutex);
 
-    // Allocate arrays based on size of A with padding for FFTW. Look at 
-    // FFTW documentation to see explanation for the need of padding.
-    difference_type padded_height = 2 * (h/2 + 1);
-    difference_type padded_width = w;
-    Array2D<value_type,fftw_allocator<value_type>> A_fftw_padded(padded_height,padded_width);
-    Array2D<value_type,fftw_allocator<value_type>> kernel_fftw_padded(padded_height,padded_width);
+    // Allocate row-major temporary buffers for FFTW simple API
+    const difference_type H = h;
+    const difference_type W = w;
+    const difference_type halfWplus1 = (W/2) + 1;
 
-    // Copy A - must do conversions to fftw_allocator explicitly
-    A_fftw_padded({0,h-1},{0,w-1}) = Array2D<value_type,fftw_allocator<value_type>>(*this);
+    double* A_rm = static_cast<double*>(fftw_malloc(sizeof(double) * H * W));
+    double* K_rm = static_cast<double*>(fftw_malloc(sizeof(double) * H * W));
+    if (!A_rm || !K_rm) {
+        if (A_rm) fftw_free(A_rm);
+        if (K_rm) fftw_free(K_rm);
+        throw std::bad_alloc();
+    }
+    // Zero initialize
+    std::fill(A_rm, A_rm + H*W, 0.0);
+    std::fill(K_rm, K_rm + H*W, 0.0);
 
-    // Form kernel - must pad and place kernel's center in the top-left
-    Array2D<value_type,fftw_allocator<value_type>> kernel_fftw(kernel);   
-    kernel_fftw_padded({0,(kernel_fftw.h-1)/2},{0,(kernel_fftw.w-1)/2}) = kernel_fftw({(kernel_fftw.h-1)/2,last},{(kernel_fftw.w-1)/2,last});
-    kernel_fftw_padded({0,(kernel_fftw.h-1)/2},{kernel_fftw_padded.w-(kernel_fftw.w-1)/2,last}) = kernel_fftw({(kernel_fftw.h-1)/2,last},{0,(kernel_fftw.w-1)/2-1});
-    kernel_fftw_padded({h-(kernel_fftw.h-1)/2,h-1},{0,(kernel_fftw.w-1)/2}) = kernel_fftw({0,(kernel_fftw.h-1)/2-1},{(kernel_fftw.w-1)/2,last});
-    kernel_fftw_padded({h-(kernel_fftw.h-1)/2,h-1},{kernel_fftw_padded.w-(kernel_fftw.w-1)/2,last}) = kernel_fftw({0,(kernel_fftw.h-1)/2-1},{0,(kernel_fftw.w-1)/2-1});
-    
-    // Create plans; output is stored in-place in A_fftw.
-    fftw_plan plan_A = fftw_plan_dft_r2c_2d(w, h, A_fftw_padded.ptr, reinterpret_cast<fftw_complex*>(A_fftw_padded.ptr), FFTW_ESTIMATE);
-    fftw_plan plan_kernel = fftw_plan_dft_r2c_2d(w, h, kernel_fftw_padded.ptr, reinterpret_cast<fftw_complex*>(kernel_fftw_padded.ptr), FFTW_ESTIMATE);
-    fftw_plan plan_output = fftw_plan_dft_c2r_2d(w, h, reinterpret_cast<fftw_complex*>(A_fftw_padded.ptr), A_fftw_padded.ptr, FFTW_ESTIMATE);
+    // Copy input array (*this) to row-major buffer
+    for (difference_type r = 0; r < H; ++r) {
+        for (difference_type c = 0; c < W; ++c) {
+            A_rm[r*W + c] = (*this)(r, c);
+        }
+    }
 
-    // Create a lambda for deleter and wrap in unique ptr - these will
-    // cause the plans to get deleted once plan_*_delete goes out of scope,
-    // or if an exception is thrown.
+    // Wrap kernel center to top-left into K_rm using (H,W)
+    const difference_type KH = kernel.h;
+    const difference_type KW = kernel.w;
+    const difference_type c_kh = (KH - 1) / 2;
+    const difference_type c_kw = (KW - 1) / 2;
+
+    // Q4 → top-left: kernel[c_kh: , c_kw: ] → K_rm[0:c_kh+1, 0:c_kw+1]
+    for (difference_type r = 0; r <= c_kh; ++r) {
+        for (difference_type c = 0; c <= c_kw; ++c) {
+            K_rm[r*W + c] = kernel(c_kh + r, c_kw + c);
+        }
+    }
+    // Q3 → top-right: kernel[c_kh: , :c_kw] → K_rm[0:c_kh+1, W-c_kw:W]
+    if (c_kw > 0) {
+        for (difference_type r = 0; r <= c_kh; ++r) {
+            for (difference_type c = 0; c < c_kw; ++c) {
+                K_rm[r*W + (W - c_kw + c)] = kernel(c_kh + r, c);
+            }
+        }
+    }
+    // Q1 → bottom-left: kernel[:c_kh, c_kw:] → K_rm[H-c_kh:H, 0:c_kw+1]
+    if (c_kh > 0) {
+        for (difference_type r = 0; r < c_kh; ++r) {
+            for (difference_type c = 0; c <= c_kw; ++c) {
+                K_rm[(H - c_kh + r)*W + c] = kernel(r, c_kh + c);
+            }
+        }
+    }
+    // Q2 → bottom-right: kernel[:c_kh, :c_kw] → K_rm[H-c_kh:H, W-c_kw:W]
+    if (c_kh > 0 && c_kw > 0) {
+        for (difference_type r = 0; r < c_kh; ++r) {
+            for (difference_type c = 0; c < c_kw; ++c) {
+                K_rm[(H - c_kh + r)*W + (W - c_kw + c)] = kernel(r, c);
+            }
+        }
+    }
+
+    // Allocate complex spectra
+    fftw_complex* A_fft = reinterpret_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * H * halfWplus1));
+    fftw_complex* K_fft = reinterpret_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * H * halfWplus1));
+    if (!A_fft || !K_fft) {
+        if (A_fft) fftw_free(A_fft);
+        if (K_fft) fftw_free(K_fft);
+        fftw_free(A_rm);
+        fftw_free(K_rm);
+        throw std::bad_alloc();
+    }
+
+    // Create plans (row-major simple API uses (h,w))
+    fftw_plan plan_A = fftw_plan_dft_r2c_2d(static_cast<int>(H), static_cast<int>(W), A_rm, A_fft, FFTW_ESTIMATE);
+    fftw_plan plan_kernel = fftw_plan_dft_r2c_2d(static_cast<int>(H), static_cast<int>(W), K_rm, K_fft, FFTW_ESTIMATE);
+    fftw_plan plan_output = fftw_plan_dft_c2r_2d(static_cast<int>(H), static_cast<int>(W), A_fft, A_rm, FFTW_ESTIMATE);
+
+    // Ensure plans are destroyed on scope exit
     auto plan_deleter = [](fftw_plan *p) { return fftw_destroy_plan(*p); };
     std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_A_delete(&plan_A, plan_deleter);
     std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_kernel_delete(&plan_kernel, plan_deleter);
     std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_output_delete(&plan_output, plan_deleter);
 
-    // Unlock here
+    // Unlock before executing
     fftw_lock.unlock();
-    
-    // Perform forward FFT of A and B
-    fftw_execute(plan_A);
-    fftw_execute(plan_kernel);        
 
-    // Dispatch based on type
-    switch (fftw_type) {
-        case FFTW::CONV: 
-            // Multiply element-wise
-            for (difference_type p = 0; p < A_fftw_padded.s; p += 2) {
-                value_type real_A = A_fftw_padded(p);
-                value_type imag_A = A_fftw_padded(p+1);
-                value_type real_kernel = kernel_fftw_padded(p);
-                value_type imag_kernel = kernel_fftw_padded(p+1);
-                A_fftw_padded(p) = real_A*real_kernel - imag_A*imag_kernel;
-                A_fftw_padded(p+1) = real_A*imag_kernel + imag_A*real_kernel;
+    // Execute forward FFTs
+    fftw_execute(plan_A);
+    fftw_execute(plan_kernel);
+
+    // Complex-domain operation over valid half-spectrum (H x (W/2+1))
+    for (difference_type r = 0; r < H; ++r) {
+        difference_type row_off = r * halfWplus1;
+        for (difference_type c = 0; c < halfWplus1; ++c) {
+            difference_type idx = row_off + c;
+            double ar = A_fft[idx][0];
+            double ai = A_fft[idx][1];
+            double kr = K_fft[idx][0];
+            double ki = K_fft[idx][1];
+            switch (fftw_type) {
+                case FFTW::CONV: {
+                    double nr = ar*kr - ai*ki;
+                    double ni = ar*ki + ai*kr;
+                    A_fft[idx][0] = nr;
+                    A_fft[idx][1] = ni;
+                    break;
+                }
+                case FFTW::DECONV: {
+                    double den = kr*kr + ki*ki;
+                    if (den == 0.0) {
+                        A_fft[idx][0] = 0.0;
+                        A_fft[idx][1] = 0.0;
+                    } else {
+                        double nr = (ar*kr + ai*ki)/den;
+                        double ni = (ai*kr - ar*ki)/den;
+                        A_fft[idx][0] = nr;
+                        A_fft[idx][1] = ni;
+                    }
+                    break;
+                }
+                case FFTW::XCORR: {
+                    // multiply by conj(kernel): (ar+iai)*(kr-iki)
+                    double nr = ar*kr + ai*ki;
+                    double ni = -ar*ki + ai*kr;
+                    A_fft[idx][0] = nr;
+                    A_fft[idx][1] = ni;
+                    break;
+                }
             }
-            break;
-        case FFTW::DECONV:
-            // Divide element-wise
-            for (difference_type p = 0; p < A_fftw_padded.s; p += 2) {
-                value_type real_A = A_fftw_padded(p);
-                value_type imag_A = A_fftw_padded(p+1);
-                value_type real_kernel = kernel_fftw_padded(p);
-                value_type imag_kernel = kernel_fftw_padded(p+1);          
-                value_type norm_kernel = std::pow(real_kernel,2) + std::pow(imag_kernel,2);                
-                A_fftw_padded(p) = (real_A*real_kernel + imag_A*imag_kernel)/norm_kernel;
-                A_fftw_padded(p+1) = (imag_A*real_kernel - real_A*imag_kernel)/norm_kernel;
-            }
-            break;
-        case FFTW::XCORR:
-            // Multiple element-wise by complex conjugate of kernel
-            for (difference_type p = 0; p < A_fftw_padded.s; p += 2) {
-                value_type real_A = A_fftw_padded(p);
-                value_type imag_A = A_fftw_padded(p+1);
-                value_type real_kernel = kernel_fftw_padded(p);
-                value_type imag_kernel = kernel_fftw_padded(p+1);
-                A_fftw_padded(p) = real_A*real_kernel - imag_A*(-imag_kernel);
-                A_fftw_padded(p+1) = real_A*(-imag_kernel) + imag_A*real_kernel;
-            }
-            break;
+        }
     }
-    
-    // Perform inverse FFT to form output
-    fftw_execute(plan_output);  
-        
-    // Lock here
+
+    // Inverse FFT back to real row-major buffer
+    fftw_execute(plan_output);
+
+    // Relock before cleanup
     fftw_lock.lock();
-       
-    // Store results in output array
-    Array2D C(Array2D<value_type,fftw_allocator<value_type>>(A_fftw_padded({0,h-1},{0,w-1})));
-    // Scale results since fftw isn't normalized
-    C = std::move(C) * (1.0 / s);
+
+    // Form output Array2D from A_rm and scale by 1/(h*w)
+    Array2D C(H, W);
+    const double scale = 1.0 / static_cast<double>(H * W);
+    for (difference_type r = 0; r < H; ++r) {
+        for (difference_type c = 0; c < W; ++c) {
+            C(r, c) = A_rm[r*W + c] * scale;
+        }
+    }
+
+    // Free temp buffers
+    fftw_free(A_rm);
+    fftw_free(K_rm);
+    fftw_free(A_fft);
+    fftw_free(K_fft);
 
     return C;
 }  
