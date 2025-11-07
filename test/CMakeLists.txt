@@ -8,6 +8,9 @@ PROJECT(ncorr_test)
 # Set output for executable
 SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ../bin)
 
+# Make sure we prefer the project's headers over system headers
+include_directories(BEFORE ../include)
+
 # Add executables
 ADD_EXECUTABLE(ncorr_test src/ncorr_test.cpp)
 ADD_EXECUTABLE(ncorr_test_cubic src/ncorr_test_cubic.cpp)
@@ -20,6 +23,7 @@ ADD_EXECUTABLE(ncorr_cubic_interpolator_test src/ncorr_cubic_interpolator_test.c
 ADD_EXECUTABLE(ncorr_nloptimizer_test src/ncorr_nloptimizer_test.cpp)
 ADD_EXECUTABLE(roi2d_reduce_test src/roi2d_reduce_test.cpp)
 ADD_EXECUTABLE(ncorr_test_rgdic_verification src/ncorr_test_rgdic_verification.cpp)
+ADD_EXECUTABLE(ncorr_test_sequential src/ncorr_test_sequential.cpp)
 
 # Set C++11 support
 set_property(TARGET ncorr_test PROPERTY CXX_STANDARD 11)
@@ -44,6 +48,8 @@ set_property(TARGET roi2d_reduce_test PROPERTY CXX_STANDARD 11)
 set_property(TARGET roi2d_reduce_test PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET ncorr_test_rgdic_verification PROPERTY CXX_STANDARD 11)
 set_property(TARGET ncorr_test_rgdic_verification PROPERTY CXX_STANDARD_REQUIRED ON)
+set_property(TARGET ncorr_test_sequential PROPERTY CXX_STANDARD 11)
+set_property(TARGET ncorr_test_sequential PROPERTY CXX_STANDARD_REQUIRED ON)
 
 # Set -03 optimization
 INCLUDE(CheckCXXCompilerFlag)
@@ -86,6 +92,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ncorr)
 target_link_libraries(ncorr_nloptimizer_test ncorr)
 target_link_libraries(roi2d_reduce_test ncorr)
 target_link_libraries(ncorr_test_rgdic_verification ncorr)
+target_link_libraries(ncorr_test_sequential ncorr)
 
 # Add opencv libraries
 FIND_LIBRARY(OPENCV_LIBRARY1 NAMES opencv_core)
@@ -100,6 +107,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${OPENCV_LIBRARY1})
 target_link_libraries(ncorr_nloptimizer_test ${OPENCV_LIBRARY1})
 target_link_libraries(roi2d_reduce_test ${OPENCV_LIBRARY1})
 target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY1})
+target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY1})
 
 FIND_LIBRARY(OPENCV_LIBRARY2 NAMES opencv_highgui)
 TARGET_LINK_LIBRARIES(ncorr_test ${OPENCV_LIBRARY2})
@@ -113,6 +121,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${OPENCV_LIBRARY2})
 target_link_libraries(ncorr_nloptimizer_test ${OPENCV_LIBRARY2})
 target_link_libraries(roi2d_reduce_test ${OPENCV_LIBRARY2})
 target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY2})
+target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY2})
 
 FIND_LIBRARY(OPENCV_LIBRARY3 NAMES opencv_imgcodecs)
 TARGET_LINK_LIBRARIES(ncorr_test ${OPENCV_LIBRARY3})
@@ -126,6 +135,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${OPENCV_LIBRARY3})
 target_link_libraries(ncorr_nloptimizer_test ${OPENCV_LIBRARY3})
 target_link_libraries(roi2d_reduce_test ${OPENCV_LIBRARY3})
 target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY3})
+target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY3})
 
 FIND_LIBRARY(OPENCV_LIBRARY4 NAMES opencv_imgproc)
 TARGET_LINK_LIBRARIES(ncorr_test ${OPENCV_LIBRARY4})
@@ -139,6 +149,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${OPENCV_LIBRARY4})
 target_link_libraries(ncorr_nloptimizer_test ${OPENCV_LIBRARY4})
 target_link_libraries(roi2d_reduce_test ${OPENCV_LIBRARY4})
 target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY4})
+target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY4})
 
 FIND_LIBRARY(OPENCV_LIBRARY5 NAMES opencv_videoio)
 TARGET_LINK_LIBRARIES(ncorr_test ${OPENCV_LIBRARY5})
@@ -152,6 +163,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${OPENCV_LIBRARY5})
 target_link_libraries(ncorr_nloptimizer_test ${OPENCV_LIBRARY5})
 target_link_libraries(roi2d_reduce_test ${OPENCV_LIBRARY5})
 target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY5})
+target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY5})
 
 # Add fftw library
 FIND_LIBRARY(FFTW_LIBRARY NAMES fftw3)
@@ -166,6 +178,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${FFTW_LIBRARY})
 target_link_libraries(ncorr_nloptimizer_test ${FFTW_LIBRARY})
 target_link_libraries(roi2d_reduce_test ${FFTW_LIBRARY})
 target_link_libraries(ncorr_test_rgdic_verification ${FFTW_LIBRARY})
+target_link_libraries(ncorr_test_sequential ${FFTW_LIBRARY})
 
 # Add suite sparse libraries
 FIND_LIBRARY(SUITESPARSE_LIBRARY1 NAMES spqr)
@@ -180,6 +193,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${SUITESPARSE_LIBRARY1})
 target_link_libraries(ncorr_nloptimizer_test ${SUITESPARSE_LIBRARY1})
 target_link_libraries(roi2d_reduce_test ${SUITESPARSE_LIBRARY1})
 target_link_libraries(ncorr_test_rgdic_verification ${SUITESPARSE_LIBRARY1})
+target_link_libraries(ncorr_test_sequential ${SUITESPARSE_LIBRARY1})
 
 FIND_LIBRARY(SUITESPARSE_LIBRARY2 NAMES cholmod)
 TARGET_LINK_LIBRARIES(ncorr_test ${SUITESPARSE_LIBRARY2})
@@ -193,6 +207,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${SUITESPARSE_LIBRARY2})
 target_link_libraries(ncorr_nloptimizer_test ${SUITESPARSE_LIBRARY2})
 target_link_libraries(roi2d_reduce_test ${SUITESPARSE_LIBRARY2})
 target_link_libraries(ncorr_test_rgdic_verification ${SUITESPARSE_LIBRARY2})
+target_link_libraries(ncorr_test_sequential ${SUITESPARSE_LIBRARY2})
 
 FIND_LIBRARY(SUITESPARSE_LIBRARY3 NAMES suitesparseconfig)
 TARGET_LINK_LIBRARIES(ncorr_test ${SUITESPARSE_LIBRARY3})
@@ -206,6 +221,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${SUITESPARSE_LIBRARY3})
 target_link_libraries(ncorr_nloptimizer_test ${SUITESPARSE_LIBRARY3})
 target_link_libraries(roi2d_reduce_test ${SUITESPARSE_LIBRARY3})
 target_link_libraries(ncorr_test_rgdic_verification ${SUITESPARSE_LIBRARY3})
+target_link_libraries(ncorr_test_sequential ${SUITESPARSE_LIBRARY3})
 
 FIND_LIBRARY(SUITESPARSE_LIBRARY4 NAMES amd)
 TARGET_LINK_LIBRARIES(ncorr_test ${SUITESPARSE_LIBRARY4})
@@ -219,6 +235,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${SUITESPARSE_LIBRARY4})
 target_link_libraries(ncorr_nloptimizer_test ${SUITESPARSE_LIBRARY4})
 target_link_libraries(roi2d_reduce_test ${SUITESPARSE_LIBRARY4})
 target_link_libraries(ncorr_test_rgdic_verification ${SUITESPARSE_LIBRARY4})
+target_link_libraries(ncorr_test_sequential ${SUITESPARSE_LIBRARY4})
 
 FIND_LIBRARY(SUITESPARSE_LIBRARY5 NAMES colamd)
 TARGET_LINK_LIBRARIES(ncorr_test ${SUITESPARSE_LIBRARY5})
@@ -232,6 +249,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${SUITESPARSE_LIBRARY5})
 target_link_libraries(ncorr_nloptimizer_test ${SUITESPARSE_LIBRARY5})
 target_link_libraries(roi2d_reduce_test ${SUITESPARSE_LIBRARY5})
 target_link_libraries(ncorr_test_rgdic_verification ${SUITESPARSE_LIBRARY5})
+target_link_libraries(ncorr_test_sequential ${SUITESPARSE_LIBRARY5})
 
 # Add lapack library
 FIND_LIBRARY(LAPACK_LIBRARY NAMES lapack)
@@ -246,6 +264,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${LAPACK_LIBRARY})
 target_link_libraries(ncorr_nloptimizer_test ${LAPACK_LIBRARY})
 target_link_libraries(roi2d_reduce_test ${LAPACK_LIBRARY})
 target_link_libraries(ncorr_test_rgdic_verification ${LAPACK_LIBRARY})
+target_link_libraries(ncorr_test_sequential ${LAPACK_LIBRARY})
 
 # Add blas library
 FIND_LIBRARY(BLAS_LIBRARY NAMES blas)
@@ -260,6 +279,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${BLAS_LIBRARY})
 target_link_libraries(ncorr_nloptimizer_test ${BLAS_LIBRARY})
 target_link_libraries(roi2d_reduce_test ${BLAS_LIBRARY})
 target_link_libraries(ncorr_test_rgdic_verification ${BLAS_LIBRARY})
+target_link_libraries(ncorr_test_sequential ${BLAS_LIBRARY})
 
 # Add gfortran library (required from blas)
 #FIND_LIBRARY(GFORTRAN_LIBRARY NAMES gfortran)
@@ -278,6 +298,7 @@ target_link_libraries(ncorr_cubic_interpolator_test ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(ncorr_nloptimizer_test ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(roi2d_reduce_test ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(ncorr_test_rgdic_verification ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(ncorr_test_sequential ${CMAKE_THREAD_LIBS_INIT})
 
 # Find and link nlohmann/json library for ncorr_test_json, ncorr_test_verif
 find_package(nlohmann_json CONFIG)
@@ -292,6 +313,7 @@ if(nlohmann_json_FOUND)
   target_link_libraries(ncorr_nloptimizer_test nlohmann_json::nlohmann_json)
   target_link_libraries(roi2d_reduce_test nlohmann_json::nlohmann_json)
   target_link_libraries(ncorr_test_rgdic_verification nlohmann_json::nlohmann_json)
+  target_link_libraries(ncorr_test_sequential nlohmann_json::nlohmann_json)
 else()
   # If package not found via find_package, try to find the header-only library
   find_path(NLOHMANN_JSON_INCLUDE_DIRS "nlohmann/json.hpp" 

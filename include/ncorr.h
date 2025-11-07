@@ -241,6 +241,7 @@ struct DIC_analysis_output final {
 };
 
 DIC_analysis_output DIC_analysis(const DIC_analysis_input&);
+DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input&);
 
 // Conversion between Lagrangian and Eulerian displacements ------------------//
 DIC_analysis_output change_perspective(const DIC_analysis_output&, INTERP);

@@ -1525,7 +1525,8 @@ namespace details {
         // analysis. The higher the number of seeds, the more robust (but slower)
         // the analysis will be.
         difference_type num_redundant_seeds = 4; 
-        auto redundant_seeds = get_ROI_partition_diagram_seeds(get_ROI_partition_diagram(roi_reduced, num_redundant_seeds), roi_reduced, num_redundant_seeds);
+        auto roi_partition_diagram = get_ROI_partition_diagram(roi_reduced, num_redundant_seeds);
+        auto redundant_seeds = get_ROI_partition_diagram_seeds(roi_partition_diagram, roi_reduced, num_redundant_seeds);
         for (auto &region_seeds: redundant_seeds) {            
             // Must scale seed position
             region_seeds = std::move(region_seeds) * scalefactor; 
@@ -1750,6 +1751,194 @@ std::pair<Disp2D, Data2D> RGDIC(const Array2D<double> &A_ref,
     // Must form union with valid points
     auto roi_valid = roi_reduced.form_union(A_vp);
     
+    return { Disp2D(std::move(A_v), std::move(A_u), roi_valid, scalefactor), Data2D(std::move(A_cc), roi_valid, scalefactor) };
+}
+
+std::pair<Disp2D, Data2D> RGDIC_without_thread(const Array2D<double> &A_ref, 
+                                               const Array2D<double> &A_cur, 
+                                               const ROI2D &roi, 
+                                               ROI2D::difference_type scalefactor, 
+                                               INTERP interp_type, 
+                                               SUBREGION subregion_type, 
+                                               ROI2D::difference_type r,
+                                               double cutoff_corrcoef,                
+                                               bool debug) { 
+    typedef ROI2D::difference_type                              difference_type;
+            
+    if (!A_ref.same_size(A_cur)) {
+        throw std::invalid_argument("Attempted to perform RGDIC on reference image input of size: " + A_ref.size_2D_string() + 
+                                    " with current image input of size: " + A_cur.size_2D_string() + ". Sizes must be the same.");
+    }
+    
+    if (!A_ref.same_size(roi.get_mask())) {
+        throw std::invalid_argument("Attempted to perform RGDIC on reference image input of size: " + A_ref.size_2D_string() + 
+                                    " with ROI input of size: " + roi.size_2D_string() + ". Sizes must be the same.");
+    }
+    
+    if (scalefactor < 1) {
+        throw std::invalid_argument("Attempted to perform RGDIC with scalefactor: " + std::to_string(scalefactor) +
+                                    ". scalefactor must be 1 or greater.");
+    }
+    
+    if (interp_type < INTERP::CUBIC_KEYS) {
+        throw std::invalid_argument("Interpolation used for RGDIC must be cubic or greater.");
+    }
+    
+    if (r < 5) {
+        throw std::invalid_argument("Attempted to perform RGDIC with radius: " + std::to_string(r) +
+                                    ". radius must be 5 or greater.");
+    }
+    
+    if (cutoff_corrcoef < 0 || cutoff_corrcoef > 4.0) {
+        throw std::invalid_argument("Input correlation coefficient cutoff of: " + std::to_string(cutoff_corrcoef) + 
+                                    " is not between [0,4].");
+    }
+    
+    // cutoff_delta_disp is a cutoff for the allowable change in displacement 
+    // between analyzed points. Generally if a point is analyzed incorrectly,
+    // it will result in a large change in displacement, so just filter these
+    // points out.
+    double cutoff_delta_disp = scalefactor;
+    
+    // Reduce ROI 
+    auto roi_reduced = roi.reduce(scalefactor);
+
+    // Get subregion nonlinear optimizer
+    auto sr_nloptimizer = details::subregion_nloptimizer(A_ref, A_cur, roi, scalefactor, interp_type, subregion_type, r);
+    
+    // Initialize displacement and correlation coefficient arrays
+    Array2D<double> A_v(roi_reduced.height(), roi_reduced.width());
+    Array2D<double> A_u(roi_reduced.height(), roi_reduced.width());
+    Array2D<double> A_cc(roi_reduced.height(), roi_reduced.width());
+    
+    // -----------------------------------------------------------------------//
+    // Perform reliability guided DIC without threading ----------------------//
+    // -----------------------------------------------------------------------//    
+    // Initialize buffers - set A_ap to all points in ROI
+    Array2D<bool> A_ap(roi_reduced.get_mask());                // Active Points
+    Array2D<bool> A_vp(roi_reduced.height(), roi_reduced.width()); // Valid Points
+    
+    // Process all regions sequentially (without threading)
+    // Note: params = {p1, p2, v, u, dv_dp1, dv_dp2, du_dp1, du_dp2, corr_coef, diff_norm}
+                   
+    // For robustness, multiple seeds are placed within each region and the 
+    // seed with the highest correlation coefficient is used in the 
+    // analysis. The higher the number of seeds, the more robust (but slower)
+    // the analysis will be.
+    difference_type num_redundant_seeds = 4; 
+    auto roi_partition_diagram = details::get_ROI_partition_diagram(roi_reduced, num_redundant_seeds);
+    auto redundant_seeds = details::get_ROI_partition_diagram_seeds(roi_partition_diagram, roi_reduced, num_redundant_seeds);
+    
+    for (auto &region_seeds: redundant_seeds) {            
+        // Must scale seed position
+        region_seeds = std::move(region_seeds) * scalefactor; 
+    }
+
+    // Cycle over regions and perform RGDIC sequentially
+    Array2D<double> params_buf(10, 1); // buffer for nloptimizer
+    for (difference_type region_idx = 0; region_idx < roi_reduced.size_regions(); ++region_idx) {              
+        if (redundant_seeds[region_idx].empty()) {
+            // This region couldn't be seeded - most likely because it was 
+            // too small.
+            continue;
+        }
+        
+        // Get seed params for queue
+        auto seed_params = details::get_seed_params(redundant_seeds[region_idx],
+                                           sr_nloptimizer, 
+                                           params_buf);
+        
+        if (!seed_params.empty()) {    
+            A_ap(seed_params(0) / scalefactor, seed_params(1) / scalefactor) = false;
+            
+            // Form queue - make it a priority queue such that the lowest 
+            // correlation coefficient values are processed first.
+            auto comp = [](const Array2D<double> &a, const Array2D<double> &b ) { return a(8) > b(8); };
+            std::priority_queue<Array2D<double>, std::vector<Array2D<double>>, std::function<bool(const Array2D<double>&,const Array2D<double>&)>> queue(comp);
+
+            // Perform flood fill around seed  
+            queue.push(seed_params);                            
+            while (!queue.empty()) {	                    
+                // 1) pop info from queue                
+                auto queue_params = std::move(queue.top()); queue.pop();
+
+                // 2) Validate and store information
+                A_vp(queue_params(0) / scalefactor,  queue_params(1) / scalefactor) = true;
+                A_v(queue_params(0) / scalefactor,  queue_params(1) / scalefactor) = queue_params(2);
+                A_u(queue_params(0) / scalefactor,  queue_params(1) / scalefactor) = queue_params(3);
+                A_cc(queue_params(0) / scalefactor,  queue_params(1) / scalefactor) = queue_params(8);
+                                        
+                // 3) Analyze four surrounding points - up, down, left right;
+                details::analyze_point(queue_params, -scalefactor, 0, roi_reduced.get_nlinfo(region_idx), scalefactor, sr_nloptimizer, cutoff_corrcoef, cutoff_delta_disp, queue, A_ap, params_buf);
+                details::analyze_point(queue_params,  scalefactor, 0, roi_reduced.get_nlinfo(region_idx), scalefactor, sr_nloptimizer, cutoff_corrcoef, cutoff_delta_disp, queue, A_ap, params_buf);
+                details::analyze_point(queue_params, 0, -scalefactor, roi_reduced.get_nlinfo(region_idx), scalefactor, sr_nloptimizer, cutoff_corrcoef, cutoff_delta_disp, queue, A_ap, params_buf);
+                details::analyze_point(queue_params, 0,  scalefactor, roi_reduced.get_nlinfo(region_idx), scalefactor, sr_nloptimizer, cutoff_corrcoef, cutoff_delta_disp, queue, A_ap, params_buf);
+            }    
+        }
+    }
+    
+    // Debugging stuff -------------------------------------------------------//    
+    if (debug) {
+        // These debugging tools are displayed during the RGDIC calculation and 
+        // give real-time updates to help assist with analysis.
+        
+        // Display preview of a subset - display 1 per region
+        auto subregion_gen = roi.get_contig_subregion_generator(subregion_type, r);
+        auto subset_seeds = details::get_ROI_partition_diagram_seeds(details::get_ROI_partition_diagram(roi_reduced, 1), roi_reduced, 1);
+        Array2D<double> subset(2*r+1,2*r+1);
+        for (const auto &subset_seed : subset_seeds) {
+            if (!subset_seed.empty()) {
+                // Clear subset
+                subset() = 0;                
+                // Get subregion and the fill
+                const auto &subregion_nlinfo = subregion_gen(subset_seed(0) * scalefactor, subset_seed(1) * scalefactor);                        
+                for (difference_type nl_idx = 0; nl_idx < subregion_nlinfo.nodelist.width(); ++nl_idx) {
+                    difference_type p2 = nl_idx + subregion_nlinfo.left_nl;
+                    for (difference_type np_idx = 0; np_idx < subregion_nlinfo.noderange(nl_idx); np_idx += 2) {
+                        difference_type np_top = subregion_nlinfo.nodelist(np_idx,nl_idx);
+                        difference_type np_bottom = subregion_nlinfo.nodelist(np_idx + 1,nl_idx);
+                        for (difference_type p1 = np_top; p1 <= np_bottom; ++p1) {   
+                            difference_type p1_shifted = p1 - (subset_seed(0) * scalefactor) + subregion_gen.get_r();
+                            difference_type p2_shifted = p2 - (subset_seed(1) * scalefactor) + subregion_gen.get_r();
+                            // Set subset value
+                            subset(p1_shifted, p2_shifted) = A_ref(p1,p2);
+                        }
+                    }
+                }     
+            }  
+            // Display subset
+            imshow(subset, 2000);
+        }
+
+        // Display v-plot - show final result
+        imshow(A_v,50); 
+    }
+    // -----------------------------------------------------------------------//
+    
+    // Go back over plot and clear any datapoints that have large displacement
+    // jumps. Not all are cleared through the RGDIC algorithm because of the 
+    // way the search is conducted.
+    auto A_vp_buf = A_vp; // Make copy of valid points since it gets overwritten
+    for (difference_type region_idx = 0; region_idx < roi_reduced.size_regions(); ++region_idx) {
+        for (difference_type nl_idx = 0; nl_idx < roi_reduced.get_nlinfo(region_idx).nodelist.width(); ++nl_idx) {
+            difference_type p2 = nl_idx + roi_reduced.get_nlinfo(region_idx).left_nl;
+            for (difference_type np_idx = 0; np_idx < roi_reduced.get_nlinfo(region_idx).noderange(nl_idx); np_idx += 2) {
+                difference_type np_top = roi_reduced.get_nlinfo(region_idx).nodelist(np_idx,nl_idx);
+                difference_type np_bottom = roi_reduced.get_nlinfo(region_idx).nodelist(np_idx + 1,nl_idx);
+                for (difference_type p1 = np_top; p1 <= np_bottom; ++p1) {
+                    if ((roi_reduced.get_nlinfo(region_idx).in_nlinfo(p1-1,p2) && A_vp_buf(p1-1,p2) && std::sqrt(std::pow(A_v(p1-1,p2) - A_v(p1,p2),2) + std::pow(A_u(p1-1,p2) - A_u(p1,p2),2)) > cutoff_delta_disp) ||
+                        (roi_reduced.get_nlinfo(region_idx).in_nlinfo(p1+1,p2) && A_vp_buf(p1+1,p2) && std::sqrt(std::pow(A_v(p1+1,p2) - A_v(p1,p2),2) + std::pow(A_u(p1+1,p2) - A_u(p1,p2),2)) > cutoff_delta_disp) ||
+                        (roi_reduced.get_nlinfo(region_idx).in_nlinfo(p1,p2-1) && A_vp_buf(p1,p2-1) && std::sqrt(std::pow(A_v(p1,p2-1) - A_v(p1,p2),2) + std::pow(A_u(p1,p2-1) - A_u(p1,p2),2)) > cutoff_delta_disp) ||
+                        (roi_reduced.get_nlinfo(region_idx).in_nlinfo(p1,p2+1) && A_vp_buf(p1,p2+1) && std::sqrt(std::pow(A_v(p1,p2+1) - A_v(p1,p2),2) + std::pow(A_u(p1,p2+1) - A_u(p1,p2),2)) > cutoff_delta_disp)) {
+                        A_vp(p1,p2) = false;
+                    }
+                }
+            }
+        }
+    }            
+    
+    // Must form union with valid points
+    auto roi_valid = roi_reduced.form_union(A_vp);    
     return { Disp2D(std::move(A_v), std::move(A_u), roi_valid, scalefactor), Data2D(std::move(A_cc), roi_valid, scalefactor) };
 }
 
@@ -2026,6 +2215,89 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                                DIC_input.subregion_type,
                                DIC_input.r, 
                                DIC_input.num_threads,
+                               DIC_input.cutoff_corrcoef,
+                               DIC_input.debug);
+        
+        std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
+        std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
+        std::cout << "Time: " << elapsed_seconds_rgdic.count() << "." << std::endl;
+        // -------------------------------------------------------------------//
+        // -------------------------------------------------------------------//
+        // -------------------------------------------------------------------//
+        
+        // Store displacements
+        if (ref_idx > 0) {
+            // Must "add" displacements before storing if reference image has 
+            // been updated.
+            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disp_pair.first }), DIC_input.interp_type);
+        } else {
+            DIC_output.disps[cur_idx-1] = disp_pair.first;
+        }
+        
+        // Test to see if selected correlation coefficient value (based on input
+        // "prctile_corrcoef") for the displacement plot exceeds correlation 
+        // coefficient cutoff value; if it does, then update the reference image.
+        Array2D<double> cc_values = disp_pair.second.get_array()(disp_pair.second.get_roi().get_mask());
+        if (!cc_values.empty()) {
+            double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
+            std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
+            if (selected_corrcoef > DIC_input.update_corrcoef) {
+                // Update the reference image index as well as the reference roi
+                ref_idx = cur_idx;
+                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type);
+            }
+        }     
+    }
+    
+    // End timer for entire analysis
+    std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed_seconds_analysis = end_analysis - start_analysis;
+    std::cout << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << "." << std::endl;
+        
+    return DIC_output;
+}
+
+
+DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input) {
+    typedef ROI2D::difference_type                              difference_type;
+            
+    if (DIC_input.imgs.size() < 2) {
+        // Must have at least two images for DIC analysis
+        throw std::invalid_argument("Only " + std::to_string(DIC_input.imgs.size()) + " images provided to DIC_analysis(). 2 or more are required.");
+    }
+            
+    // Start timer for entire analysis
+    std::chrono::time_point<std::chrono::system_clock> start_analysis = std::chrono::system_clock::now();
+    
+    // Initialize output - note that output will be WRT the first (reference)
+    // image which is assumed to be the Lagrangian perspective.
+    DIC_analysis_output DIC_output;
+    DIC_output.disps.resize(DIC_input.imgs.size()-1);
+    DIC_output.perspective_type = PERSPECTIVE::LAGRANGIAN;
+    DIC_output.units = "pixels";
+    DIC_output.units_per_pixel = 1.0;
+            
+    // Set ROI for the reference image - this gets updated if reference image 
+    // gets updated. Then, cycle over images and perform DIC.
+    ROI2D roi_ref = DIC_input.roi; 
+    for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
+        // -------------------------------------------------------------------//
+        // Perform RGDIC -----------------------------------------------------//
+        // -------------------------------------------------------------------//
+        std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
+        std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
+        std::cout << "Current image: " << DIC_input.imgs[cur_idx] << "." << std::endl;
+        
+        std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
+        
+        auto disp_pair = RGDIC_without_thread(DIC_input.imgs[ref_idx].get_gs(), 
+                               DIC_input.imgs[cur_idx].get_gs(), 
+                               roi_ref, 
+                               DIC_input.scalefactor, 
+                               DIC_input.interp_type, 
+                               DIC_input.subregion_type,
+                               DIC_input.r, 
+                               //DIC_input.num_threads,
                                DIC_input.cutoff_corrcoef,
                                DIC_input.debug);
         
