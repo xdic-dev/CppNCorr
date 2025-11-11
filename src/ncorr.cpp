@@ -3325,4 +3325,312 @@ void save_strain_video(const std::string &filename,
                                    fourcc);
 }
 
+
+// Seed-based parallel DIC analysis implementation ---------------------------//
+
+// Generate initial seed positions on a sparse grid
+std::vector<SeedParams> generate_seed_positions(const ROI2D& roi, ROI2D::difference_type spacing, ROI2D::difference_type seed_density) {
+    typedef ROI2D::difference_type difference_type;
+    
+    std::vector<SeedParams> seeds;
+    
+    // Get ROI mask
+    const Array2D<bool>& mask = roi.get_mask();
+    difference_type step = spacing * seed_density;
+    
+    // Iterate through ROI on sparse grid
+    for (difference_type y = 0; y < mask.height(); y += step) {
+        for (difference_type x = 0; x < mask.width(); x += step) {
+            if (mask(y, x)) {
+                // This point is inside the ROI - add as seed
+                seeds.emplace_back(x, y);
+            }
+        }
+    }
+    
+    std::cout << "Generated " << seeds.size() << " seed positions with spacing=" << spacing 
+              << " and density=" << seed_density << std::endl;
+    
+    return seeds;
 }
+
+// Update seed positions based on displacement (seed propagation)
+std::vector<SeedParams> propagate_seeds(const std::vector<SeedParams>& seeds, ROI2D::difference_type spacing) {
+    std::vector<SeedParams> propagated_seeds;
+    propagated_seeds.reserve(seeds.size());
+    
+    for (const auto& seed : seeds) {
+        SeedParams new_seed = seed;
+        
+        // Update position based on displacement, rounding to spaced grid
+        // This matches the Matlab logic: pos + round(u/(spacing+1))*(spacing+1)
+        new_seed.x = seed.x + std::round(seed.u / (spacing + 1)) * (spacing + 1);
+        new_seed.y = seed.y + std::round(seed.v / (spacing + 1)) * (spacing + 1);
+        
+        propagated_seeds.push_back(new_seed);
+    }
+    
+    return propagated_seeds;
+}
+
+// Lightweight seed analysis for predicting reference updates
+SeedAnalysisResult analyze_seeds(
+    const Array2D<double>& ref_gs,
+    const Array2D<double>& cur_gs,
+    const ROI2D& roi,
+    const std::vector<SeedParams>& seed_positions,
+    INTERP interp_type,
+    SUBREGION subregion_type,
+    std::ptrdiff_t radius,
+    std::ptrdiff_t scalefactor,
+    double cutoff_diffnorm,
+    std::ptrdiff_t cutoff_iteration,
+    double cutoff_max_diffnorm,
+    double cutoff_max_corrcoef
+) {
+    typedef std::ptrdiff_t difference_type;
+    
+    SeedAnalysisResult result;
+    result.seeds.reserve(seed_positions.size());
+    result.convergence.reserve(seed_positions.size());
+    result.success = true;
+    
+    // Create subregion optimizer (IC-GN implementation)
+    details::subregion_nloptimizer sr_optimizer(ref_gs, cur_gs, roi, scalefactor, interp_type, subregion_type, radius);
+    
+    // Analyze each seed point using existing subregion optimizer
+    for (const auto& seed_pos : seed_positions) {
+        // Check if seed is within valid bounds
+        if (seed_pos.x < radius || seed_pos.x >= ref_gs.width() - radius ||
+            seed_pos.y < radius || seed_pos.y >= ref_gs.height() - radius) {
+            result.success = false;
+            continue;
+        }
+        
+        // Check if seed is in ROI
+        if (!roi.get_mask()(seed_pos.y, seed_pos.x)) {
+            result.success = false;
+            continue;
+        }
+        
+        // Initialize parameters for optimizer
+        // params = {p1, p2, v, u, dv_dp1, dv_dp2, du_dp1, du_dp2, corr_coef, diff_norm}
+        Array2D<double> params_init(10, 1);
+        params_init(0, 0) = seed_pos.y * scalefactor;  // p1 in full resolution
+        params_init(1, 0) = seed_pos.x * scalefactor;  // p2 in full resolution
+        params_init(2, 0) = 0.0;  // v
+        params_init(3, 0) = 0.0;  // u
+        params_init(4, 0) = 0.0;  // dv_dp1
+        params_init(5, 0) = 0.0;  // dv_dp2
+        params_init(6, 0) = 0.0;  // du_dp1
+        params_init(7, 0) = 0.0;  // du_dp2
+        params_init(8, 0) = 0.0;  // corr_coef
+        params_init(9, 0) = 0.0;  // diff_norm
+        
+        // Run IC-GN optimization via global() method
+        auto result_pair = sr_optimizer.global(params_init);
+        bool converged = result_pair.second;
+        const auto& params_result = result_pair.first;
+        
+        if (!converged) {
+            result.success = false;
+            continue;
+        }
+        
+        // Extract optimized parameters from result
+        SeedParams seed_result;
+        seed_result.x = seed_pos.x;
+        seed_result.y = seed_pos.y;
+        seed_result.v = params_result(2, 0);
+        seed_result.u = params_result(3, 0);
+        seed_result.dv_dx = params_result(4, 0);
+        seed_result.dv_dy = params_result(5, 0);
+        seed_result.du_dx = params_result(6, 0);
+        seed_result.du_dy = params_result(7, 0);
+        seed_result.corrcoef = params_result(8, 0);
+        
+        // Extract convergence metrics
+        SeedConvergence convergence;
+        convergence.num_iterations = cutoff_iteration;  // Approximation
+        convergence.diffnorm = params_result(9, 0);
+        
+        result.seeds.push_back(seed_result);
+        result.convergence.push_back(convergence);
+        
+        // Check quality thresholds
+        if (seed_result.corrcoef > cutoff_max_corrcoef || convergence.diffnorm > cutoff_max_diffnorm) {
+            result.success = false;
+        }
+    }
+    
+    return result;
+}
+
+// Parallel DIC analysis using seed-based failure prediction
+DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& input) {
+    typedef std::ptrdiff_t difference_type;
+    
+    const auto& DIC_input = input.base_input;
+    
+    if (DIC_input.imgs.size() < 2) {
+        throw std::invalid_argument("DIC_analysis_parallel requires at least 2 images.");
+    }
+    
+    std::cout << std::endl << "Starting seed-based parallel DIC analysis..." << std::endl;
+    std::cout << "Seed spacing: " << input.seed_spacing << std::endl;
+    std::cout << "Seed density: " << input.seed_density << std::endl;
+    std::cout << "Max lookahead: " << input.max_lookahead << std::endl;
+    
+    std::chrono::time_point<std::chrono::system_clock> start_analysis = std::chrono::system_clock::now();
+    
+    // Initialize output
+    DIC_analysis_output DIC_output;
+    DIC_output.disps.resize(DIC_input.imgs.size() - 1);
+    
+    // Generate initial seed positions
+    auto seeds = generate_seed_positions(DIC_input.roi, input.seed_spacing, input.seed_density);
+    
+    if (seeds.empty()) {
+        throw std::runtime_error("No valid seed positions could be generated from the ROI.");
+    }
+    
+    // Main analysis loop
+    ROI2D roi_ref = DIC_input.roi;
+    difference_type ref_idx = 0;
+    difference_type cur_idx = 1;
+    
+    while (cur_idx < static_cast<difference_type>(DIC_input.imgs.size())) {
+        std::cout << std::endl << "=== Processing batch starting at frame " << cur_idx << " ===" << std::endl;
+        
+        // PHASE 1: Sequential seed analysis
+        difference_type safe_batch_size = 0;
+        std::vector<SeedAnalysisResult> seed_results;
+        
+        std::cout << "Phase 1: Analyzing seeds for lookahead prediction..." << std::endl;
+        for (difference_type lookahead = 0; lookahead < input.max_lookahead; ++lookahead) {
+            if (cur_idx + lookahead >= static_cast<difference_type>(DIC_input.imgs.size())) {
+                break;
+            }
+            
+            std::cout << "  Checking frame " << (cur_idx + lookahead) << " with " << seeds.size() << " seeds... ";
+            
+            auto seed_result = analyze_seeds(
+                DIC_input.imgs[ref_idx].get_gs(),
+                DIC_input.imgs[cur_idx + lookahead].get_gs(),
+                roi_ref,
+                seeds,
+                DIC_input.interp_type,
+                DIC_input.subregion_type,
+                DIC_input.r,
+                DIC_input.scalefactor,
+                1e-6,  // cutoff_diffnorm
+                50,    // cutoff_iteration
+                input.cutoff_max_diffnorm,
+                input.cutoff_max_corrcoef
+            );
+            
+            seed_results.push_back(seed_result);
+            
+            if (!seed_result.success) {
+                std::cout << "FAILURE predicted (quality threshold exceeded)" << std::endl;
+                break;
+            }
+            
+            std::cout << "SUCCESS" << std::endl;
+            safe_batch_size++;
+        }
+        
+        if (safe_batch_size == 0) {
+            safe_batch_size = 1;
+            std::cout << "Warning: Seeds predict failure on first frame, processing anyway..." << std::endl;
+        }
+        
+        std::cout << "Safe batch size: " << safe_batch_size << " frames" << std::endl;
+        
+        // PHASE 2: Parallel full RGDIC for safe batch
+        std::cout << "Phase 2: Running full RGDIC in parallel for batch..." << std::endl;
+        
+        // Store correlation coefficients for all frames in batch
+        std::vector<Data2D> cc_data(safe_batch_size);
+        
+        #pragma omp parallel for num_threads(std::min(safe_batch_size, DIC_input.num_threads)) schedule(dynamic)
+        for (difference_type i = 0; i < safe_batch_size; ++i) {
+            difference_type frame_idx = cur_idx + i;
+            
+            #pragma omp critical
+            {
+                std::cout << "  Processing frame " << frame_idx << " (parallel)" << std::endl;
+            }
+            
+            auto disp_pair = RGDIC(
+                DIC_input.imgs[ref_idx].get_gs(),
+                DIC_input.imgs[frame_idx].get_gs(),
+                roi_ref,
+                DIC_input.scalefactor,
+                DIC_input.interp_type,
+                DIC_input.subregion_type,
+                DIC_input.r,
+                1,  // Single thread per RGDIC
+                DIC_input.cutoff_corrcoef,
+                DIC_input.debug
+            );
+            
+            // Store displacement and correlation coefficient
+            #pragma omp critical
+            {
+                if (ref_idx > 0) {
+                    DIC_output.disps[frame_idx - 1] = add(
+                        std::vector<Disp2D>({ DIC_output.disps[ref_idx - 1], disp_pair.first }),
+                        DIC_input.interp_type
+                    );
+                } else {
+                    DIC_output.disps[frame_idx - 1] = disp_pair.first;
+                }
+                cc_data[i] = disp_pair.second;
+            }
+        }
+        
+        // PHASE 3: Check if we need to update reference
+        difference_type last_frame = cur_idx + safe_batch_size - 1;
+        const auto& cc_last = cc_data[safe_batch_size - 1];
+        
+        // Extract correlation coefficient values from Data2D
+        Array2D<double> cc_values = cc_last.get_array()(cc_last.get_roi().get_mask());
+        
+        bool should_update_ref = false;
+        if (!cc_values.empty()) {
+            double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
+            std::cout << "Frame " << last_frame << " correlation coefficient: " << selected_corrcoef
+                     << " (update threshold: " << DIC_input.update_corrcoef << ")" << std::endl;
+            
+            if (selected_corrcoef > DIC_input.update_corrcoef) {
+                should_update_ref = true;
+            }
+        }
+        
+        // Update reference and propagate seeds if needed
+        if (should_update_ref) {
+            std::cout << "Updating reference image to frame " << last_frame << std::endl;
+            ref_idx = last_frame;
+            roi_ref = update(DIC_input.roi, DIC_output.disps[last_frame - 1], DIC_input.interp_type);
+            
+            // Propagate seeds to track material
+            if (!seed_results.empty() && safe_batch_size > 0) {
+                seeds = propagate_seeds(seed_results[safe_batch_size - 1].seeds, input.seed_spacing);
+                std::cout << "Seeds propagated to new positions" << std::endl;
+            }
+        }
+        
+        cur_idx += safe_batch_size;
+    }
+    
+    // End timer
+    std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end_analysis - start_analysis;
+    std::cout << std::endl << "Total parallel DIC analysis time: " << elapsed_seconds.count() << " seconds" << std::endl;
+    
+    return DIC_output;
+}
+
+}
+

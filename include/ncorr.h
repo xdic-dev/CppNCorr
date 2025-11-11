@@ -243,6 +243,98 @@ struct DIC_analysis_output final {
 DIC_analysis_output DIC_analysis(const DIC_analysis_input&);
 DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input&);
 
+// Seed-based parallel DIC analysis ------------------------------------------//
+struct SeedParams final {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    // Seed position in the reference image
+    difference_type x;
+    difference_type y;
+    
+    // Displacement and deformation gradient (9 parameters total)
+    double u;          // displacement in x
+    double v;          // displacement in y
+    double du_dx;      // deformation gradient
+    double du_dy;
+    double dv_dx;
+    double dv_dy;
+    double corrcoef;   // correlation coefficient (quality metric)
+    
+    // Constructors
+    SeedParams() : x(0), y(0), u(0.0), v(0.0), du_dx(0.0), du_dy(0.0), dv_dx(0.0), dv_dy(0.0), corrcoef(0.0) { }
+    SeedParams(difference_type x, difference_type y) : 
+        x(x), y(y), u(0.0), v(0.0), du_dx(0.0), du_dy(0.0), dv_dx(0.0), dv_dy(0.0), corrcoef(0.0) { }
+};
+
+struct SeedConvergence final {
+    int num_iterations;
+    double diffnorm;
+    
+    SeedConvergence() : num_iterations(0), diffnorm(0.0) { }
+    SeedConvergence(int iter, double norm) : num_iterations(iter), diffnorm(norm) { }
+};
+
+struct SeedAnalysisResult final {
+    std::vector<SeedParams> seeds;
+    std::vector<SeedConvergence> convergence;
+    bool success;
+    
+    SeedAnalysisResult() : success(false) { }
+};
+
+// Lightweight seed analysis for predicting reference updates
+SeedAnalysisResult analyze_seeds(
+    const Array2D<double>& ref_gs,
+    const Array2D<double>& cur_gs,
+    const ROI2D& roi,
+    const std::vector<SeedParams>& seed_positions,
+    INTERP interp_type,
+    SUBREGION subregion_type,
+    ROI2D::difference_type radius,
+    double cutoff_diffnorm = 1e-6,
+    int cutoff_iteration = 50,
+    double cutoff_max_diffnorm = 0.1,
+    double cutoff_max_corrcoef = 0.5
+);
+
+// Generate initial seed positions on a sparse grid
+std::vector<SeedParams> generate_seed_positions(
+    const ROI2D& roi,
+    ROI2D::difference_type spacing,
+    ROI2D::difference_type seed_density = 4  // One seed every seed_density*spacing points
+);
+
+// Update seed positions based on displacement (seed propagation)
+std::vector<SeedParams> propagate_seeds(
+    const std::vector<SeedParams>& seeds,
+    ROI2D::difference_type spacing
+);
+
+struct DIC_analysis_parallel_input final {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    // Base DIC input parameters
+    DIC_analysis_input base_input;
+    
+    // Seed-based parallelization parameters
+    difference_type seed_spacing;         // Spacing between seed points
+    difference_type seed_density;         // Seed every seed_density*spacing points
+    difference_type max_lookahead;        // Maximum frames to analyze ahead
+    double cutoff_max_diffnorm;          // Diffnorm threshold for failure prediction
+    double cutoff_max_corrcoef;          // Corrcoef threshold for failure prediction
+    
+    // Constructors
+    DIC_analysis_parallel_input() : seed_spacing(4), seed_density(4), max_lookahead(8),
+                                    cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
+    
+    DIC_analysis_parallel_input(const DIC_analysis_input& base) : 
+        base_input(base), seed_spacing(4), seed_density(4), max_lookahead(8),
+        cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
+};
+
+// Parallel DIC analysis using seed-based failure prediction
+DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input&);
+
 // Conversion between Lagrangian and Eulerian displacements ------------------//
 DIC_analysis_output change_perspective(const DIC_analysis_output&, INTERP);
 
