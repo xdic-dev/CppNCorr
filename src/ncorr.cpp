@@ -3677,6 +3677,9 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
     // Initialize output
     DIC_analysis_output DIC_output;
     DIC_output.disps.resize(DIC_input.imgs.size() - 1);
+    DIC_output.perspective_type = PERSPECTIVE::LAGRANGIAN;
+    DIC_output.units = "pixels";
+    DIC_output.units_per_pixel = 1.0;
     
     // PHASE 1: Compute seed parameters for all frames with ROI updates
     std::cout << "\nPhase 1: Computing seed parameters for all frames..." << std::endl;
@@ -3715,6 +3718,10 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
     size_t safe_batch_size = seed_data.size();
     
     // Use OpenMP for parallel execution (Python uses ThreadPoolExecutor, C++ uses OpenMP)
+    std::cout << "Safe batch size: " << safe_batch_size << std::endl;
+    std::cout << "Number of threads: " << DIC_input.num_threads << std::endl;
+    std::cout << "static_cast<difference_type>(safe_batch_size): " << static_cast<difference_type>(safe_batch_size) << std::endl;
+    std::cout << "Number of threads: " << std::min(static_cast<difference_type>(safe_batch_size), DIC_input.num_threads) << std::endl;
     #pragma omp parallel for num_threads(std::min(static_cast<difference_type>(safe_batch_size), DIC_input.num_threads)) schedule(dynamic)
     for (size_t i = 0; i < safe_batch_size; ++i) {
         difference_type frame_idx = static_cast<difference_type>(i) + 1;

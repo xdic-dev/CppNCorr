@@ -46,7 +46,8 @@ int main(int argc, char *argv[]) {
 
 		// Set seeds
 		std::vector<SeedParams> seeds;
-		seeds.push_back(SeedParams(159.0*DIC_input.scalefactor, 156.0*DIC_input.scalefactor));
+		// seeds.push_back(SeedParams(159.0*DIC_input.scalefactor, 156.0*DIC_input.scalefactor));
+		seeds.push_back(SeedParams(159.0, 156.0));
 
 		DIC_parallel_input = DIC_analysis_parallel_input(DIC_input, seeds);
 
