@@ -284,28 +284,28 @@ struct SeedAnalysisResult final {
 
 // Lightweight seed analysis for predicting reference updates
 SeedAnalysisResult analyze_seeds(
+    const details::subregion_nloptimizer &sr_nloptimizer,
     const Array2D<double>& ref_gs,
-    const Array2D<double>& cur_gs,
     const ROI2D& roi,
     const std::vector<SeedParams>& seed_positions,
-    INTERP interp_type,
-    SUBREGION subregion_type,
     ROI2D::difference_type radius,
     ROI2D::difference_type scalefactor,
-    double cutoff_diffnorm = 1e-6,
-    int cutoff_iteration = 50,
-    double cutoff_max_diffnorm = 0.1,
-    double cutoff_max_corrcoef = 0.5
+    double cutoff_diffnorm,
+    int cutoff_iteration,
+    double cutoff_max_diffnorm,
+    double cutoff_max_corrcoef,
+    bool debug = true
 );
 
 // Structure to hold precomputed seed data for each frame
 struct SeedComputationData final {
     ROI2D roi;                    // Updated ROI for this frame
     std::vector<SeedParams> seed_params_by_region;  // One seed param per region
+    details::subregion_nloptimizer sr_nloptimizer;
     
     SeedComputationData() = default;
-    SeedComputationData(const ROI2D& roi, const std::vector<SeedParams>& params) : 
-        roi(roi), seed_params_by_region(params) { }
+    SeedComputationData(const ROI2D& roi, const std::vector<SeedParams>& params, const details::subregion_nloptimizer &sr_nloptimizer) : 
+        roi(roi), seed_params_by_region(params), sr_nloptimizer(sr_nloptimizer) { }
 };
 
 // Compute seed parameters for all frames with ROI updates
@@ -325,19 +325,16 @@ std::vector<SeedComputationData> compute_only_seed_points(
 );
 
 // Compute displacements using precomputed seed parameters
-Disp2D compute_displacements(
-    const Array2D<double>& A_ref,
-    const Array2D<double>& A_cur,
+std::pair<Disp2D, Data2D> compute_displacements(
+    const details::subregion_nloptimizer &sr_nloptimizer,
     const ROI2D& roi_reduced,
     const SeedParams& seedparams,
     ROI2D::difference_type scalefactor,
-    INTERP interp_type,
-    SUBREGION subregion_type,
     ROI2D::difference_type r,
     double cutoff_corrcoef,
-    ROI2D::difference_type region_idx = 0,
-    bool debug = false
-);
+    ROI2D::difference_type region_idx,
+    bool debug
+) ;
 
 // Update seed positions based on displacement (seed propagation)
 std::vector<SeedParams> propagate_seeds(
