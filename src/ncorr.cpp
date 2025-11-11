@@ -3328,30 +3328,284 @@ void save_strain_video(const std::string &filename,
 
 // Seed-based parallel DIC analysis implementation ---------------------------//
 
-// Generate initial seed positions on a sparse grid
-std::vector<SeedParams> generate_seed_positions(const ROI2D& roi, ROI2D::difference_type spacing, ROI2D::difference_type seed_density) {
-    typedef ROI2D::difference_type difference_type;
+// Compute displacements using precomputed seed parameters
+Disp2D compute_displacements(
+    const Array2D<double>& A_ref,
+    const Array2D<double>& A_cur,
+    const ROI2D& roi_reduced,
+    const SeedParams& seedparams,
+    ROI2D::difference_type scalefactor,
+    INTERP interp_type,
+    SUBREGION subregion_type,
+    ROI2D::difference_type r,
+    double cutoff_corrcoef,
+    ROI2D::difference_type region_idx,
+    bool debug
+) {
+    typedef std::ptrdiff_t difference_type;
     
-    std::vector<SeedParams> seeds;
+    // Perform RGDIC with manual seed (reliability-guided expansion from seed point)
+    difference_type H = roi_reduced.height();
+    difference_type W = roi_reduced.width();
     
-    // Get ROI mask
-    const Array2D<bool>& mask = roi.get_mask();
-    difference_type step = spacing * seed_density;
+    // Create arrays for displacement computation
+    Array2D<double> A_v(H, W);
+    Array2D<double> A_u(H, W);
+    Array2D<double> A_cc(H, W);
+    Array2D<bool> A_ap(H, W);
+    Array2D<bool> A_vp(H, W);
     
-    // Iterate through ROI on sparse grid
-    for (difference_type y = 0; y < mask.height(); y += step) {
-        for (difference_type x = 0; x < mask.width(); x += step) {
-            if (mask(y, x)) {
-                // This point is inside the ROI - add as seed
-                seeds.emplace_back(x, y);
+    // Initialize to zero
+    for (difference_type i = 0; i < H; ++i) {
+        for (difference_type j = 0; j < W; ++j) {
+            A_v(i, j) = 0.0;
+            A_u(i, j) = 0.0;
+            A_cc(i, j) = 0.0;
+            A_vp(i, j) = false;
+        }
+    }
+    
+    // Active points = reduced ROI mask
+    A_ap = roi_reduced.get_mask();
+    
+    // Seed position in full resolution and reduced grid
+    difference_type p1_full = seedparams.y;
+    difference_type p2_full = seedparams.x;
+    difference_type p1_idx = p1_full / scalefactor;
+    difference_type p2_idx = p2_full / scalefactor;
+    
+    if (debug) {
+        std::cout << "Seed point: (" << p2_full << ", " << p1_full << ") -> reduced (" 
+                  << p2_idx << ", " << p1_idx << ")" << std::endl;
+    }
+    
+    // Create subregion optimizer for this seed
+    details::subregion_nloptimizer sr_optimizer(A_ref, A_cur, roi_reduced, scalefactor, interp_type, subregion_type, r);
+    
+    // Initialize seed parameters
+    Array2D<double> params_seed(10, 1);
+    params_seed(0, 0) = p1_full;
+    params_seed(1, 0) = p2_full;
+    params_seed(2, 0) = seedparams.v;
+    params_seed(3, 0) = seedparams.u;
+    params_seed(4, 0) = seedparams.dv_dx;
+    params_seed(5, 0) = seedparams.dv_dy;
+    params_seed(6, 0) = seedparams.du_dx;
+    params_seed(7, 0) = seedparams.du_dy;
+    params_seed(8, 0) = seedparams.corrcoef;
+    params_seed(9, 0) = 0.0;  // diffnorm
+    
+    // Deactivate seed point in active mask
+    A_ap(p1_idx, p2_idx) = false;
+    
+    // Reliability-guided expansion using priority queue
+    std::priority_queue<std::pair<double, Array2D<double>>, 
+                       std::vector<std::pair<double, Array2D<double>>>,
+                       std::greater<std::pair<double, Array2D<double>>>> pq;
+    
+    pq.push({params_seed(8, 0), params_seed});  // Use corrcoef for ordering
+    
+    // Neighbor offsets
+    std::vector<std::pair<difference_type, difference_type>> neighbors = {
+        {-scalefactor, 0}, {scalefactor, 0}, {0, -scalefactor}, {0, scalefactor}
+    };
+    
+    const auto& nlinfo = roi_reduced.get_nlinfo(region_idx);
+    difference_type cutoff_delta_disp = scalefactor;
+    
+    // Process queue
+    while (!pq.empty()) {
+        auto qparams = pq.top().second;
+        pq.pop();
+        
+        difference_type q_p1_idx = static_cast<difference_type>(qparams(0, 0)) / scalefactor;
+        difference_type q_p2_idx = static_cast<difference_type>(qparams(1, 0)) / scalefactor;
+        
+        // Mark as valid and store displacement
+        A_vp(q_p1_idx, q_p2_idx) = true;
+        A_v(q_p1_idx, q_p2_idx) = qparams(2, 0);
+        A_u(q_p1_idx, q_p2_idx) = qparams(3, 0);
+        A_cc(q_p1_idx, q_p2_idx) = qparams(8, 0);
+        
+        // Analyze neighbors
+        for (const auto& neighbor : neighbors) {
+            difference_type dp1 = neighbor.first;
+            difference_type dp2 = neighbor.second;
+            difference_type n_p1_full = static_cast<difference_type>(qparams(0, 0)) + dp1;
+            difference_type n_p2_full = static_cast<difference_type>(qparams(1, 0)) + dp2;
+            difference_type n_p1_idx = n_p1_full / scalefactor;
+            difference_type n_p2_idx = n_p2_full / scalefactor;
+            
+            // Check if neighbor is active and in nlinfo
+            if (n_p1_idx >= 0 && n_p1_idx < H && n_p2_idx >= 0 && n_p2_idx < W &&
+                A_ap(n_p1_idx, n_p2_idx) && nlinfo.in_nlinfo(n_p1_idx, n_p2_idx)) {
+                
+                // Initialize neighbor parameters from current point
+                Array2D<double> params_neighbor(10, 1);
+                params_neighbor(0, 0) = n_p1_full;
+                params_neighbor(1, 0) = n_p2_full;
+                for (difference_type i = 2; i < 10; ++i) {
+                    params_neighbor(i, 0) = qparams(i, 0);
+                }
+                
+                // Optimize neighbor
+                auto result = sr_optimizer.global(params_neighbor);
+                if (result.second && result.first(8, 0) < cutoff_corrcoef) {
+                    // Check displacement jump
+                    double delta_v = result.first(2, 0) - qparams(2, 0);
+                    double delta_u = result.first(3, 0) - qparams(3, 0);
+                    double delta_disp = std::sqrt(delta_v * delta_v + delta_u * delta_u);
+                    
+                    if (delta_disp <= cutoff_delta_disp) {
+                        A_ap(n_p1_idx, n_p2_idx) = false;
+                        pq.push({result.first(8, 0), result.first});
+                    }
+                }
             }
         }
     }
     
-    std::cout << "Generated " << seeds.size() << " seed positions with spacing=" << spacing 
-              << " and density=" << seed_density << std::endl;
+    // Post-process: displacement jump filtering
+    Array2D<bool> A_vp_buf = A_vp;
+    if (nlinfo.nodelist.width() > 0) {
+        for (difference_type nl_idx = 0; nl_idx < nlinfo.nodelist.width(); ++nl_idx) {
+            difference_type p2 = nl_idx + nlinfo.left_nl;
+            for (difference_type np_idx = 0; np_idx < nlinfo.noderange(0, nl_idx); np_idx += 2) {
+                difference_type np_top = nlinfo.nodelist(np_idx, nl_idx);
+                difference_type np_bottom = nlinfo.nodelist(np_idx + 1, nl_idx);
+                
+                for (difference_type p1 = np_top; p1 <= np_bottom; ++p1) {
+                    if (!A_vp_buf(p1, p2)) continue;
+                    
+                    // Check neighbors for large displacement jumps
+                    std::vector<std::pair<difference_type, difference_type>> check_neighbors = {
+                        {p1 - 1, p2}, {p1 + 1, p2}, {p1, p2 - 1}, {p1, p2 + 1}
+                    };
+                    
+                    for (const auto& check_neighbor : check_neighbors) {
+                        difference_type np1 = check_neighbor.first;
+                        difference_type np2 = check_neighbor.second;
+                        if (np1 >= 0 && np1 < H && np2 >= 0 && np2 < W &&
+                            nlinfo.in_nlinfo(np1, np2) && A_vp_buf(np1, np2)) {
+                            
+                            double delta_v = A_v(np1, np2) - A_v(p1, p2);
+                            double delta_u = A_u(np1, np2) - A_u(p1, p2);
+                            double delta_disp = std::sqrt(delta_v * delta_v + delta_u * delta_u);
+                            
+                            if (delta_disp > cutoff_delta_disp) {
+                                A_vp(p1, p2) = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     
-    return seeds;
+    ROI2D roi_valid = roi_reduced.form_union(A_vp);
+    
+    if (debug) {
+        std::cout << "RGDIC completed with manual seed" << std::endl;
+    }
+    
+    return Disp2D(std::move(A_v), std::move(A_u), roi_valid, scalefactor);
+}
+
+// Compute seed parameters for all frames with ROI updates
+std::vector<SeedComputationData> compute_only_seed_points(
+    const Array2D<double>& A_ref,
+    const std::vector<Array2D<double>>& A_curs,
+    const ROI2D& roi,
+    ROI2D::difference_type scalefactor,
+    INTERP interp_type,
+    SUBREGION subregion_type,
+    ROI2D::difference_type r,
+    const std::vector<SeedParams>& seeds_by_region,
+    double cutoff_corrcoef,
+    ROI2D::difference_type region_idx,
+    bool debug
+) {
+    typedef std::ptrdiff_t difference_type;
+    
+    std::vector<SeedComputationData> selected_data;
+    
+    // Start with initial reference and ROI
+    Array2D<double> A_ref_current = A_ref;
+    ROI2D roi_current = roi;
+    std::vector<SeedParams> seeds_current = seeds_by_region;
+    
+    size_t idx = 0;
+    while (idx < A_curs.size()) {
+        const Array2D<double>& A_cur = A_curs[idx];
+        
+        if (debug) {
+            std::cout << "\n=== Analyzing frame " << (idx + 1) << " ===" << std::endl;
+        }
+        
+        // Analyze seeds for this frame
+        SeedAnalysisResult seed_results = analyze_seeds(
+            A_ref_current,
+            A_cur,
+            roi_current,
+            seeds_current,
+            interp_type,
+            subregion_type,
+            r,
+            scalefactor,
+            1e-6,   // cutoff_diffnorm
+            50,     // cutoff_iteration
+            0.1,    // cutoff_max_diffnorm
+            0.5     // cutoff_max_corrcoef
+        );
+        
+        if (seed_results.success) {
+            // Seed analysis successful - store data
+            if (debug) {
+                std::cout << "Seed analysis successful at frame " << (idx + 1) << std::endl;
+            }
+            
+            selected_data.emplace_back(roi_current, seed_results.seeds);
+            idx++;
+        } else {
+            // Seed analysis failed - update reference and propagate seeds
+            if (debug) {
+                std::cout << "Seed analysis failed at frame " << (idx + 1) << ", updating reference" << std::endl;
+            }
+            
+            // Compute displacement to previous frame
+            Disp2D disps = compute_displacements(
+                A_ref_current,
+                A_cur,
+                roi_current.reduce(scalefactor),
+                seeds_current[region_idx],
+                scalefactor,
+                interp_type,
+                subregion_type,
+                r,
+                cutoff_corrcoef,
+                region_idx,
+                debug
+            );
+            
+            // Update reference image and ROI
+            A_ref_current = A_cur;
+            roi_current = update(roi, disps, interp_type);
+            
+            // Propagate seeds to track material deformation
+            seeds_current = propagate_seeds(seed_results.seeds, scalefactor);
+            
+            if (debug) {
+                std::cout << "Reference updated, seeds propagated" << std::endl;
+            }
+        }
+    }
+    
+    if (debug) {
+        std::cout << "\nComputed seed parameters for " << selected_data.size() << " frames" << std::endl;
+    }
+    
+    return selected_data;
 }
 
 // Update seed positions based on displacement (seed propagation)
@@ -3381,10 +3635,10 @@ SeedAnalysisResult analyze_seeds(
     const std::vector<SeedParams>& seed_positions,
     INTERP interp_type,
     SUBREGION subregion_type,
-    std::ptrdiff_t radius,
-    std::ptrdiff_t scalefactor,
+    ROI2D::difference_type radius,
+    ROI2D::difference_type scalefactor,
     double cutoff_diffnorm,
-    std::ptrdiff_t cutoff_iteration,
+    int cutoff_iteration,
     double cutoff_max_diffnorm,
     double cutoff_max_corrcoef
 ) {
@@ -3476,10 +3730,15 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
         throw std::invalid_argument("DIC_analysis_parallel requires at least 2 images.");
     }
     
+    // Seeds should be provided per region (not generated here)
+    if (input.seeds_by_region.empty()) {
+        throw std::invalid_argument("DIC_analysis_parallel requires seeds_by_region to be provided.");
+    }
+    
     std::cout << std::endl << "Starting seed-based parallel DIC analysis..." << std::endl;
-    std::cout << "Seed spacing: " << input.seed_spacing << std::endl;
-    std::cout << "Seed density: " << input.seed_density << std::endl;
-    std::cout << "Max lookahead: " << input.max_lookahead << std::endl;
+    std::cout << "Number of regions: " << input.seeds_by_region.size() << std::endl;
+    std::cout << "Cutoff max diffnorm: " << input.cutoff_max_diffnorm << std::endl;
+    std::cout << "Cutoff max corrcoef: " << input.cutoff_max_corrcoef << std::endl;
     
     std::chrono::time_point<std::chrono::system_clock> start_analysis = std::chrono::system_clock::now();
     
@@ -3487,141 +3746,77 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
     DIC_analysis_output DIC_output;
     DIC_output.disps.resize(DIC_input.imgs.size() - 1);
     
-    // Generate initial seed positions
-    auto seeds = generate_seed_positions(DIC_input.roi, input.seed_spacing, input.seed_density);
+    // PHASE 1: Compute seed parameters for all frames with ROI updates
+    std::cout << "\nPhase 1: Computing seed parameters for all frames..." << std::endl;
     
-    if (seeds.empty()) {
-        throw std::runtime_error("No valid seed positions could be generated from the ROI.");
+    // Prepare current images
+    std::vector<Array2D<double>> A_curs;
+    A_curs.reserve(DIC_input.imgs.size() - 1);
+    for (size_t i = 1; i < DIC_input.imgs.size(); ++i) {
+        A_curs.push_back(DIC_input.imgs[i].get_gs());
     }
     
-    // Main analysis loop
-    ROI2D roi_ref = DIC_input.roi;
-    difference_type ref_idx = 0;
-    difference_type cur_idx = 1;
+    // Compute seed parameters upfront
+    std::vector<SeedComputationData> seed_data = compute_only_seed_points(
+        DIC_input.imgs[0].get_gs(),
+        A_curs,
+        DIC_input.roi,
+        DIC_input.scalefactor,
+        DIC_input.interp_type,
+        DIC_input.subregion_type,
+        DIC_input.r,
+        input.seeds_by_region,
+        DIC_input.cutoff_corrcoef,
+        0,  // region_idx (working with first region, but structure supports n regions)
+        DIC_input.debug
+    );
     
-    while (cur_idx < static_cast<difference_type>(DIC_input.imgs.size())) {
-        std::cout << std::endl << "=== Processing batch starting at frame " << cur_idx << " ===" << std::endl;
+    if (seed_data.empty()) {
+        throw std::runtime_error("No valid seed parameters could be computed.");
+    }
+    
+    std::cout << "Successfully computed seed parameters for " << seed_data.size() << " frames" << std::endl;
+    
+    // PHASE 2: Parallel displacement computation using precomputed seed data
+    std::cout << "\nPhase 2: Computing displacements in parallel..." << std::endl;
+    
+    size_t safe_batch_size = seed_data.size();
+    
+    // Use OpenMP for parallel execution (Python uses ThreadPoolExecutor, C++ uses OpenMP)
+    #pragma omp parallel for num_threads(std::min(static_cast<difference_type>(safe_batch_size), DIC_input.num_threads)) schedule(dynamic)
+    for (size_t i = 0; i < safe_batch_size; ++i) {
+        difference_type frame_idx = static_cast<difference_type>(i) + 1;
         
-        // PHASE 1: Sequential seed analysis
-        difference_type safe_batch_size = 0;
-        std::vector<SeedAnalysisResult> seed_results;
-        
-        std::cout << "Phase 1: Analyzing seeds for lookahead prediction..." << std::endl;
-        for (difference_type lookahead = 0; lookahead < input.max_lookahead; ++lookahead) {
-            if (cur_idx + lookahead >= static_cast<difference_type>(DIC_input.imgs.size())) {
-                break;
-            }
-            
-            std::cout << "  Checking frame " << (cur_idx + lookahead) << " with " << seeds.size() << " seeds... ";
-            
-            auto seed_result = analyze_seeds(
-                DIC_input.imgs[ref_idx].get_gs(),
-                DIC_input.imgs[cur_idx + lookahead].get_gs(),
-                roi_ref,
-                seeds,
-                DIC_input.interp_type,
-                DIC_input.subregion_type,
-                DIC_input.r,
-                DIC_input.scalefactor,
-                1e-6,  // cutoff_diffnorm
-                50,    // cutoff_iteration
-                input.cutoff_max_diffnorm,
-                input.cutoff_max_corrcoef
-            );
-            
-            seed_results.push_back(seed_result);
-            
-            if (!seed_result.success) {
-                std::cout << "FAILURE predicted (quality threshold exceeded)" << std::endl;
-                break;
-            }
-            
-            std::cout << "SUCCESS" << std::endl;
-            safe_batch_size++;
+        #pragma omp critical
+        {
+            std::cout << "  Processing frame " << frame_idx << " (parallel)" << std::endl;
         }
         
-        if (safe_batch_size == 0) {
-            safe_batch_size = 1;
-            std::cout << "Warning: Seeds predict failure on first frame, processing anyway..." << std::endl;
+        // Use precomputed seed data for this frame
+        const auto& frame_data = seed_data[i];
+        const auto& roi_for_frame = frame_data.roi;
+        const auto& seed_params_for_frame = frame_data.seed_params_by_region[0];  // Using first region
+        
+        // Compute displacements using precomputed seed parameters
+        Disp2D disp = compute_displacements(
+            DIC_input.imgs[0].get_gs(),  // Reference (may need to be updated based on seed computation)
+            DIC_input.imgs[frame_idx].get_gs(),
+            roi_for_frame.reduce(DIC_input.scalefactor),
+            seed_params_for_frame,
+            DIC_input.scalefactor,
+            DIC_input.interp_type,
+            DIC_input.subregion_type,
+            DIC_input.r,
+            DIC_input.cutoff_corrcoef,
+            0,  // region_idx
+            DIC_input.debug
+        );
+        
+        // Store displacement
+        #pragma omp critical
+        {
+            DIC_output.disps[frame_idx - 1] = disp;
         }
-        
-        std::cout << "Safe batch size: " << safe_batch_size << " frames" << std::endl;
-        
-        // PHASE 2: Parallel full RGDIC for safe batch
-        std::cout << "Phase 2: Running full RGDIC in parallel for batch..." << std::endl;
-        
-        // Store correlation coefficients for all frames in batch
-        std::vector<Data2D> cc_data(safe_batch_size);
-        
-        #pragma omp parallel for num_threads(std::min(safe_batch_size, DIC_input.num_threads)) schedule(dynamic)
-        for (difference_type i = 0; i < safe_batch_size; ++i) {
-            difference_type frame_idx = cur_idx + i;
-            
-            #pragma omp critical
-            {
-                std::cout << "  Processing frame " << frame_idx << " (parallel)" << std::endl;
-            }
-            
-            auto disp_pair = RGDIC(
-                DIC_input.imgs[ref_idx].get_gs(),
-                DIC_input.imgs[frame_idx].get_gs(),
-                roi_ref,
-                DIC_input.scalefactor,
-                DIC_input.interp_type,
-                DIC_input.subregion_type,
-                DIC_input.r,
-                1,  // Single thread per RGDIC
-                DIC_input.cutoff_corrcoef,
-                DIC_input.debug
-            );
-            
-            // Store displacement and correlation coefficient
-            #pragma omp critical
-            {
-                if (ref_idx > 0) {
-                    DIC_output.disps[frame_idx - 1] = add(
-                        std::vector<Disp2D>({ DIC_output.disps[ref_idx - 1], disp_pair.first }),
-                        DIC_input.interp_type
-                    );
-                } else {
-                    DIC_output.disps[frame_idx - 1] = disp_pair.first;
-                }
-                cc_data[i] = disp_pair.second;
-            }
-        }
-        
-        // PHASE 3: Check if we need to update reference
-        difference_type last_frame = cur_idx + safe_batch_size - 1;
-        const auto& cc_last = cc_data[safe_batch_size - 1];
-        
-        // Extract correlation coefficient values from Data2D
-        Array2D<double> cc_values = cc_last.get_array()(cc_last.get_roi().get_mask());
-        
-        bool should_update_ref = false;
-        if (!cc_values.empty()) {
-            double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
-            std::cout << "Frame " << last_frame << " correlation coefficient: " << selected_corrcoef
-                     << " (update threshold: " << DIC_input.update_corrcoef << ")" << std::endl;
-            
-            if (selected_corrcoef > DIC_input.update_corrcoef) {
-                should_update_ref = true;
-            }
-        }
-        
-        // Update reference and propagate seeds if needed
-        if (should_update_ref) {
-            std::cout << "Updating reference image to frame " << last_frame << std::endl;
-            ref_idx = last_frame;
-            roi_ref = update(DIC_input.roi, DIC_output.disps[last_frame - 1], DIC_input.interp_type);
-            
-            // Propagate seeds to track material
-            if (!seed_results.empty() && safe_batch_size > 0) {
-                seeds = propagate_seeds(seed_results[safe_batch_size - 1].seeds, input.seed_spacing);
-                std::cout << "Seeds propagated to new positions" << std::endl;
-            }
-        }
-        
-        cur_idx += safe_batch_size;
     }
     
     // End timer
@@ -3633,4 +3828,3 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
 }
 
 }
-

@@ -44,7 +44,11 @@ int main(int argc, char *argv[]) {
 					       DIC_analysis_config::NO_UPDATE,				// DIC configuration for reference image updates
 					       true);							// Debugging enabled/disabled
 
-		DIC_parallel_input = DIC_analysis_parallel_input(DIC_input);
+		// Set seeds
+		std::vector<SeedParams> seeds;
+		seeds.push_back(SeedParams(159.0*DIC_input.scalefactor, 156.0*DIC_input.scalefactor));
+
+		DIC_parallel_input = DIC_analysis_parallel_input(DIC_input, seeds);
 
 		// Perform DIC_analysis    
 		DIC_output = DIC_analysis_parallel(DIC_parallel_input);

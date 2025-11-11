@@ -291,17 +291,52 @@ SeedAnalysisResult analyze_seeds(
     INTERP interp_type,
     SUBREGION subregion_type,
     ROI2D::difference_type radius,
+    ROI2D::difference_type scalefactor,
     double cutoff_diffnorm = 1e-6,
     int cutoff_iteration = 50,
     double cutoff_max_diffnorm = 0.1,
     double cutoff_max_corrcoef = 0.5
 );
 
-// Generate initial seed positions on a sparse grid
-std::vector<SeedParams> generate_seed_positions(
+// Structure to hold precomputed seed data for each frame
+struct SeedComputationData final {
+    ROI2D roi;                    // Updated ROI for this frame
+    std::vector<SeedParams> seed_params_by_region;  // One seed param per region
+    
+    SeedComputationData() = default;
+    SeedComputationData(const ROI2D& roi, const std::vector<SeedParams>& params) : 
+        roi(roi), seed_params_by_region(params) { }
+};
+
+// Compute seed parameters for all frames with ROI updates
+// Returns precomputed data (roi, seed_params) for each successfully analyzed frame
+std::vector<SeedComputationData> compute_only_seed_points(
+    const Array2D<double>& A_ref,
+    const std::vector<Array2D<double>>& A_curs,
     const ROI2D& roi,
-    ROI2D::difference_type spacing,
-    ROI2D::difference_type seed_density = 4  // One seed every seed_density*spacing points
+    ROI2D::difference_type scalefactor,
+    INTERP interp_type,
+    SUBREGION subregion_type,
+    ROI2D::difference_type r,
+    const std::vector<SeedParams>& seeds_by_region,  // One seed per region
+    double cutoff_corrcoef,
+    ROI2D::difference_type region_idx = 0,
+    bool debug = false
+);
+
+// Compute displacements using precomputed seed parameters
+Disp2D compute_displacements(
+    const Array2D<double>& A_ref,
+    const Array2D<double>& A_cur,
+    const ROI2D& roi_reduced,
+    const SeedParams& seedparams,
+    ROI2D::difference_type scalefactor,
+    INTERP interp_type,
+    SUBREGION subregion_type,
+    ROI2D::difference_type r,
+    double cutoff_corrcoef,
+    ROI2D::difference_type region_idx = 0,
+    bool debug = false
 );
 
 // Update seed positions based on displacement (seed propagation)
@@ -316,19 +351,18 @@ struct DIC_analysis_parallel_input final {
     // Base DIC input parameters
     DIC_analysis_input base_input;
     
+    // Seed parameters (one per region - provided by user, not generated)
+    std::vector<SeedParams> seeds_by_region;
+    
     // Seed-based parallelization parameters
-    difference_type seed_spacing;         // Spacing between seed points
-    difference_type seed_density;         // Seed every seed_density*spacing points
-    difference_type max_lookahead;        // Maximum frames to analyze ahead
     double cutoff_max_diffnorm;          // Diffnorm threshold for failure prediction
     double cutoff_max_corrcoef;          // Corrcoef threshold for failure prediction
     
     // Constructors
-    DIC_analysis_parallel_input() : seed_spacing(4), seed_density(4), max_lookahead(8),
-                                    cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
+    DIC_analysis_parallel_input() : cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
     
-    DIC_analysis_parallel_input(const DIC_analysis_input& base) : 
-        base_input(base), seed_spacing(4), seed_density(4), max_lookahead(8),
+    DIC_analysis_parallel_input(const DIC_analysis_input& base, const std::vector<SeedParams>& seeds) : 
+        base_input(base), seeds_by_region(seeds),
         cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
 };
 
