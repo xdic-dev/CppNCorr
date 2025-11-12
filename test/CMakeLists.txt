@@ -61,6 +61,29 @@ if (COMPILER_SUPPORTS_O3)
 	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 endif()
 
+# Find OpenMP - with special handling for Mac Homebrew
+if(APPLE)
+    # Check for Homebrew OpenMP installation
+    if(EXISTS "/opt/homebrew/opt/libomp")
+        set(OpenMP_C_FLAGS "-Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include")
+        set(OpenMP_C_LIB_NAMES "omp")
+        set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include")
+        set(OpenMP_CXX_LIB_NAMES "omp")
+        set(OpenMP_omp_LIBRARY "/opt/homebrew/opt/libomp/lib/libomp.dylib")
+    elseif(EXISTS "/usr/local/opt/libomp")
+        set(OpenMP_C_FLAGS "-Xpreprocessor -fopenmp -I/usr/local/opt/libomp/include")
+        set(OpenMP_C_LIB_NAMES "omp")
+        set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -I/usr/local/opt/libomp/include")
+        set(OpenMP_CXX_LIB_NAMES "omp")
+        set(OpenMP_omp_LIBRARY "/usr/local/opt/libomp/lib/libomp.dylib")
+    endif()
+endif()
+
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "OpenMP found for tests - enabling parallel support")
+endif()
+
 # Set include directories
 SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isystem /opt/homebrew/include")
 
@@ -99,6 +122,23 @@ target_link_libraries(roi2d_reduce_test ncorr)
 target_link_libraries(ncorr_test_rgdic_verification ncorr)
 target_link_libraries(ncorr_test_sequential ncorr)
 target_link_libraries(ncorr_test_parallel ncorr)
+
+# Link OpenMP to test executables
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(ncorr_test OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_test_cubic OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_test_json OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_test_verif OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_test_parity OpenMP::OpenMP_CXX)
+    target_link_libraries(interpolator_test OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_interpolator_test OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_cubic_interpolator_test OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_nloptimizer_test OpenMP::OpenMP_CXX)
+    target_link_libraries(roi2d_reduce_test OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_test_rgdic_verification OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_test_sequential OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_test_parallel OpenMP::OpenMP_CXX)
+endif()
 
 # Add opencv libraries
 FIND_LIBRARY(OPENCV_LIBRARY1 NAMES opencv_core)

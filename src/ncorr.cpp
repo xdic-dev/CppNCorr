@@ -6,6 +6,7 @@
  */
 
 #include "ncorr.h"
+#include <omp.h>
 
 namespace ncorr {
     
@@ -3465,7 +3466,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
         const Array2D<double>& A_cur = A_curs[idx];
         
         if (debug) {
-            std::cout << "\n=== Analyzing frame " << (idx + 1) << " ===" << std::endl;
+            std::cout << "\n=== Seeding analyzing frame " << (idx + 1) << " ===> ";
         }
 
         // Get subregion nonlinear optimizer
@@ -3488,7 +3489,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
         if (seed_results.success) {
             // Seed analysis successful - store data
             if (debug) {
-                std::cout << "Seed analysis successful at frame " << (idx + 1) << std::endl;
+                std::cout << "Successful!" << std::endl;
             }
             
             selected_data.emplace_back(roi_current, seed_results.seeds, sr_nloptimizer);
@@ -3496,7 +3497,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
         } else {
             // Seed analysis failed - update reference and propagate seeds
             if (debug) {
-                std::cout << "Seed analysis failed at frame " << (idx + 1) << ", updating reference" << std::endl;
+                std::cout << "Failed! Updating reference ===>" << std::endl;
             }
 
             auto A_prev = A_curs[idx-1];
@@ -3526,7 +3527,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
             seeds_current = propagate_seeds(prev_seedparams, scalefactor);
             
             if (debug) {
-                std::cout << "Reference updated, seeds propagated" << std::endl;
+                std::cout << "Reference updated, seeds propagated <====" << std::endl;
             }
         }
     }
@@ -3725,6 +3726,9 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
     #pragma omp parallel for num_threads(std::min(static_cast<difference_type>(safe_batch_size), DIC_input.num_threads)) schedule(dynamic)
     for (size_t i = 0; i < safe_batch_size; ++i) {
         difference_type frame_idx = static_cast<difference_type>(i) + 1;
+        int thread_id = omp_get_thread_num();
+        int total_threads = omp_get_num_threads();
+        printf("Running on thread %d of %d\n", thread_id, total_threads);
         
         #pragma omp critical
         {

@@ -3,7 +3,7 @@
 using namespace ncorr;
 
 int main(int argc, char *argv[]) {
-	if (argc != 2) {
+	if (argc < 2) {
 		throw std::invalid_argument("Must have 1 command line input of either 'calculate' or 'load'");	
 	}
 
@@ -25,12 +25,24 @@ int main(int argc, char *argv[]) {
 		strain_input = strain_analysis_input::load("save/strain_input.bin");
 		strain_output = strain_analysis_output::load("save/strain_output.bin");
 	} else if (input == "calculate") {
+		std::string input2("-1");
+		if (argc == 3) {
+			input2 = argv[2];
+		}
 		// Set images
 		std::vector<Image2D> imgs;
-		for (int i = 0; i <= 11; ++i) {
-		    std::ostringstream ostr;
-		    ostr << "images/ohtcfrp_" << std::setfill('0') << std::setw(2) << i << ".png";
-		    imgs.push_back(ostr.str());
+		if (input2 == "1") {
+			for (int i = 1; i <= 150; ++i) {
+				std::ostringstream ostr;
+				ostr << "images/frame_" << std::setfill('0') << std::setw(6) << i << ".png";
+				imgs.push_back(ostr.str());
+			}
+		} else {
+			for (int i = 0; i <= 11; ++i) {
+				std::ostringstream ostr;
+				ostr << "images/ohtcfrp_" << std::setfill('0') << std::setw(2) << i << ".png";
+				imgs.push_back(ostr.str());
+			}
 		}
 		
 		// Set DIC_input
@@ -46,8 +58,11 @@ int main(int argc, char *argv[]) {
 
 		// Set seeds
 		std::vector<SeedParams> seeds;
-		// seeds.push_back(SeedParams(159.0*DIC_input.scalefactor, 156.0*DIC_input.scalefactor));
-		seeds.push_back(SeedParams(159.0, 156.0));
+		if (input2 == "1") {
+			seeds.push_back(SeedParams(600, 800));
+		} else {
+			seeds.push_back(SeedParams(159.0, 156.0));
+		}
 
 		DIC_parallel_input = DIC_analysis_parallel_input(DIC_input, seeds);
 
