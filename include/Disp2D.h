@@ -37,8 +37,16 @@ public:
     ~Disp2D() noexcept = default;
     
     // Additional constructors -----------------------------------------------//
+    // Constructor with explicit correlation coefficient
+    Disp2D(Array2D<double> v, Array2D<double> u, Array2D<double> cc, const ROI2D &roi, difference_type scalefactor) : // r-value
+         v(std::move(v), roi, scalefactor), u(std::move(u), roi, scalefactor), cc(std::move(cc), roi, scalefactor) { }
+    
+    // Constructor without correlation - creates zeros array by default
     Disp2D(Array2D<double> v, Array2D<double> u, const ROI2D &roi, difference_type scalefactor) : // r-value
-         v(std::move(v), roi, scalefactor), u(std::move(u), roi, scalefactor) { }
+         v(std::move(v), roi, scalefactor), u(std::move(u), roi, scalefactor), 
+         cc(Array2D<double>(this->v.data_height(), this->v.data_width()), roi, scalefactor) { 
+        // Correlation initialized to zeros by default Array2D constructor
+    }
         
     // Static factory methods ------------------------------------------------//
     static Disp2D load(std::ifstream&);
@@ -55,6 +63,7 @@ public:
     difference_type data_width() const { return v.data_width(); }
     const Data2D& get_v() const { return v; } 
     const Data2D& get_u() const { return u; } 
+    const Data2D& get_cc() const { return cc; }  // Access correlation coefficient
     const ROI2D& get_roi() const { return v.get_roi(); }   
     difference_type get_scalefactor() const { return v.get_scalefactor(); }
     
@@ -68,6 +77,7 @@ public:
 private:        
     Data2D v;   // Immutable - Data2D has pointer semantics
     Data2D u;   // Immutable - Data2D has pointer semantics
+    Data2D cc;  // Immutable - Correlation coefficient field
 };
   
 namespace details {    
@@ -88,15 +98,19 @@ namespace details {
             
             // Additional Constructors ---------------------------------------//            
             Disp2D_nlinfo_interpolator(const Disp2D &disp, difference_type region_idx, INTERP interp_type) :
-                v_interp(disp.get_v().get_nlinfo_interpolator(region_idx,interp_type)), u_interp(disp.get_u().get_nlinfo_interpolator(region_idx,interp_type)) { }
+                v_interp(disp.get_v().get_nlinfo_interpolator(region_idx,interp_type)), 
+                u_interp(disp.get_u().get_nlinfo_interpolator(region_idx,interp_type)),
+                cc_interp(disp.get_cc().get_nlinfo_interpolator(region_idx,interp_type)) { }
              
             // Access methods ------------------------------------------------//
             std::pair<double,double> operator()(double p1, double p2) const { return { v_interp(p1,p2), u_interp(p1,p2) }; }
+            double get_cc(double p1, double p2) const { return cc_interp(p1, p2); }  // Get interpolated correlation
             std::pair<const Array2D<double>&,const Array2D<double>&> first_order(double p1, double p2) const { return { v_interp.first_order(p1,p2), u_interp.first_order(p1,p2) }; }
             
         private:       
-            Data2D::nlinfo_interpolator v_interp; // must have copy of interpolator
-            Data2D::nlinfo_interpolator u_interp; // must have copy of interpolator
+            Data2D::nlinfo_interpolator v_interp;  // must have copy of interpolator
+            Data2D::nlinfo_interpolator u_interp;  // must have copy of interpolator
+            Data2D::nlinfo_interpolator cc_interp; // must have copy of interpolator for correlation
     };    
 }
 

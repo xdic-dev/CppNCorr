@@ -148,7 +148,7 @@ Data2D update(const Data2D&, const Disp2D&, INTERP);
 Disp2D add(const std::vector<Disp2D>&, INTERP);
 
 // DIC_analysis --------------------------------------------------------------//
-std::pair<Disp2D, Data2D> RGDIC(const Array2D<double>&, const Array2D<double>&, const ROI2D&, ROI2D::difference_type, INTERP, SUBREGION, ROI2D::difference_type, ROI2D::difference_type, double, bool);
+Disp2D RGDIC(const Array2D<double>&, const Array2D<double>&, const ROI2D&, ROI2D::difference_type, INTERP, SUBREGION, ROI2D::difference_type, ROI2D::difference_type, double, bool);
 
 enum class DIC_analysis_config { NO_UPDATE, KEEP_MOST_POINTS, REMOVE_BAD_POINTS };
 
@@ -325,7 +325,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
 );
 
 // Compute displacements using precomputed seed parameters
-std::pair<Disp2D, Data2D> compute_displacements(
+Disp2D compute_displacements(
     const details::subregion_nloptimizer &sr_nloptimizer,
     const ROI2D& roi_reduced,
     const SeedParams& seedparams,
