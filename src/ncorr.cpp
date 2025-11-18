@@ -945,6 +945,9 @@ Disp2D add(const std::vector<Disp2D> &disps, INTERP interp_type) {
     Array2D<bool> A_vp(roi.height(), roi.width());       
     Array2D<double> A_v_added(roi.height(), roi.width());
     Array2D<double> A_u_added(roi.height(), roi.width());
+    Array2D<double> A_cc_combined(roi.height(), roi.width());  // Combined correlation (minimum = worst case)
+    A_cc_combined() = 1.0;  // Initialize to best possible correlation
+    
     for (difference_type region_idx = 0; region_idx < roi.size_regions(); ++region_idx) {
         // Get nlinfo interpolators for each displacement field for this region
         std::vector<Disp2D::nlinfo_interpolator> disp_nlinfo_interps;
@@ -965,6 +968,7 @@ Disp2D add(const std::vector<Disp2D> &disps, INTERP interp_type) {
                     // Cycle over displacements and add displacement values
                     double v_added = 0;
                     double u_added = 0;
+                    double cc_min = 1.0;  // Track minimum correlation (worst quality)
                     for (difference_type disp_idx = 0; disp_idx < difference_type(disps.size()); ++disp_idx) {
                         // Make sure coords are close to this nlinfo - the 
                         // further away points are from the roi, the more 
@@ -985,6 +989,8 @@ Disp2D add(const std::vector<Disp2D> &disps, INTERP interp_type) {
                         
                         if (near_nlinfo) {
                             auto disp_pair = disp_nlinfo_interps[disp_idx](p1 + v_added, p2 + u_added);
+                            double cc_val = disp_nlinfo_interps[disp_idx].get_cc(p1 + v_added, p2 + u_added);
+                            cc_min = std::min(cc_min, cc_val);  // Take minimum correlation
 
                             v_added += disp_pair.first;
                             u_added += disp_pair.second;
@@ -1005,6 +1011,7 @@ Disp2D add(const std::vector<Disp2D> &disps, INTERP interp_type) {
                         // Only add point if it was interpolated in bounds
                         A_v_added(p1_unscaled, p2_unscaled) = v_added;
                         A_u_added(p1_unscaled, p2_unscaled) = u_added;
+                        A_cc_combined(p1_unscaled, p2_unscaled) = cc_min;  // Store worst-case correlation
                         A_vp(p1_unscaled, p2_unscaled) = true;
                     }
                 }
@@ -1012,7 +1019,7 @@ Disp2D add(const std::vector<Disp2D> &disps, INTERP interp_type) {
         }
     }
     // Must form union with valid points
-    return { std::move(A_v_added), std::move(A_u_added), roi.form_union(A_vp), scalefactor };  
+    return { std::move(A_v_added), std::move(A_u_added), std::move(A_cc_combined), roi.form_union(A_vp), scalefactor };  
 }
 
 // DIC_analysis --------------------------------------------------------------//
@@ -1581,7 +1588,7 @@ namespace details {
     }    
 }
 
-std::pair<Disp2D, Data2D> RGDIC(const Array2D<double> &A_ref, 
+Disp2D RGDIC(const Array2D<double> &A_ref, 
                                 const Array2D<double> &A_cur, 
                                 const ROI2D &roi, 
                                 ROI2D::difference_type scalefactor, 
@@ -1752,10 +1759,10 @@ std::pair<Disp2D, Data2D> RGDIC(const Array2D<double> &A_ref,
     // Must form union with valid points
     auto roi_valid = roi_reduced.form_union(A_vp);
     
-    return { Disp2D(std::move(A_v), std::move(A_u), roi_valid, scalefactor), Data2D(std::move(A_cc), roi_valid, scalefactor) };
+    return Disp2D(std::move(A_v), std::move(A_u), std::move(A_cc), roi_valid, scalefactor);
 }
 
-std::pair<Disp2D, Data2D> RGDIC_without_thread(const Array2D<double> &A_ref, 
+Disp2D RGDIC_without_thread(const Array2D<double> &A_ref, 
                                                const Array2D<double> &A_cur, 
                                                const ROI2D &roi, 
                                                ROI2D::difference_type scalefactor, 
@@ -1940,7 +1947,7 @@ std::pair<Disp2D, Data2D> RGDIC_without_thread(const Array2D<double> &A_ref,
     
     // Must form union with valid points
     auto roi_valid = roi_reduced.form_union(A_vp);    
-    return { Disp2D(std::move(A_v), std::move(A_u), roi_valid, scalefactor), Data2D(std::move(A_cc), roi_valid, scalefactor) };
+    return Disp2D(std::move(A_v), std::move(A_u), std::move(A_cc), roi_valid, scalefactor);
 }
 
 DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs, 
@@ -2208,7 +2215,7 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
         
         std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
         
-        auto disp_pair = RGDIC(DIC_input.imgs[ref_idx].get_gs(), 
+        auto disps = RGDIC(DIC_input.imgs[ref_idx].get_gs(), 
                                DIC_input.imgs[cur_idx].get_gs(), 
                                roi_ref, 
                                DIC_input.scalefactor, 
@@ -2230,15 +2237,15 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
         if (ref_idx > 0) {
             // Must "add" displacements before storing if reference image has 
             // been updated.
-            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disp_pair.first }), DIC_input.interp_type);
+            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
         } else {
-            DIC_output.disps[cur_idx-1] = disp_pair.first;
+            DIC_output.disps[cur_idx-1] = disps;
         }
         
         // Test to see if selected correlation coefficient value (based on input
         // "prctile_corrcoef") for the displacement plot exceeds correlation 
         // coefficient cutoff value; if it does, then update the reference image.
-        Array2D<double> cc_values = disp_pair.second.get_array()(disp_pair.second.get_roi().get_mask());
+        Array2D<double> cc_values = disps.get_cc().get_array()(disps.get_cc().get_roi().get_mask());
         if (!cc_values.empty()) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
@@ -2291,7 +2298,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
         
         std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
         
-        auto disp_pair = RGDIC_without_thread(DIC_input.imgs[ref_idx].get_gs(), 
+        auto disps = RGDIC_without_thread(DIC_input.imgs[ref_idx].get_gs(), 
                                DIC_input.imgs[cur_idx].get_gs(), 
                                roi_ref, 
                                DIC_input.scalefactor, 
@@ -2313,15 +2320,15 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
         if (ref_idx > 0) {
             // Must "add" displacements before storing if reference image has 
             // been updated.
-            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disp_pair.first }), DIC_input.interp_type);
+            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
         } else {
-            DIC_output.disps[cur_idx-1] = disp_pair.first;
+            DIC_output.disps[cur_idx-1] = disps;
         }
         
         // Test to see if selected correlation coefficient value (based on input
         // "prctile_corrcoef") for the displacement plot exceeds correlation 
         // coefficient cutoff value; if it does, then update the reference image.
-        Array2D<double> cc_values = disp_pair.second.get_array()(disp_pair.second.get_roi().get_mask());
+        Array2D<double> cc_values = disps.get_cc().get_array()(disps.get_cc().get_roi().get_mask());
         if (!cc_values.empty()) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
@@ -2406,9 +2413,11 @@ DIC_analysis_output set_units(const DIC_analysis_output &DIC_output, const std::
         // Get copies of displacement fields and apply conversion
         auto A_v = DIC_output.disps[disp_idx].get_v().get_array() * units_per_pixel;
         auto A_u = DIC_output.disps[disp_idx].get_u().get_array() * units_per_pixel;
+        auto A_cc = DIC_output.disps[disp_idx].get_cc().get_array().copy();  // Correlation doesn't scale
         
         DIC_output_updated.disps.push_back(Disp2D(std::move(A_v), 
-                                                  std::move(A_u), 
+                                                  std::move(A_u),
+                                                  std::move(A_cc), 
                                                   DIC_output.disps[disp_idx].get_roi(), 
                                                   DIC_output.disps[disp_idx].get_scalefactor()));
     }
@@ -3330,7 +3339,7 @@ void save_strain_video(const std::string &filename,
 // Seed-based parallel DIC analysis implementation ---------------------------//
 
 // Compute displacements using precomputed seed parameters
-std::pair<Disp2D, Data2D> compute_displacements(
+Disp2D compute_displacements(
     const details::subregion_nloptimizer &sr_nloptimizer,
     const ROI2D& roi_reduced,
     const SeedParams& seedparams,
@@ -3434,8 +3443,7 @@ std::pair<Disp2D, Data2D> compute_displacements(
     if (debug) {
         std::cout << "RGDIC completed with manual seed" << std::endl;
     }   
-    return { Disp2D(std::move(A_v), std::move(A_u), roi_valid, scalefactor), Data2D(std::move(A_cc), roi_valid, scalefactor) };
-
+    return Disp2D(std::move(A_v), std::move(A_u), std::move(A_cc), roi_valid, scalefactor);
 }
 
 // Compute seed parameters for all frames with ROI updates
@@ -3508,7 +3516,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
             auto prev_roi = selected_data.back().roi;
             
             // Compute displacements between at the previous frame
-            auto disp_pair = compute_displacements(
+            auto disps = compute_displacements(
                 prev_sr_nloptimizer,
                 prev_roi.reduce(scalefactor),
                 prev_seedparams[region_idx],
@@ -3521,7 +3529,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
             
             // Update reference image and ROI
             A_ref_current = A_prev;
-            roi_current = update(prev_roi, disp_pair.first, interp_type);
+            roi_current = update(prev_roi, disps, interp_type);
             
             // Propagate seeds to track material deformation
             seeds_current = propagate_seeds(prev_seedparams, scalefactor);
@@ -3742,7 +3750,7 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
         const auto& sr_nloptimizer_for_frame = frame_data.sr_nloptimizer;
         
         // Compute displacements using precomputed seed parameters
-        auto disp_pair = compute_displacements(
+        auto disps = compute_displacements(
             sr_nloptimizer_for_frame,
             roi_for_frame.reduce(DIC_input.scalefactor),
             seed_params_for_frame,
@@ -3756,7 +3764,7 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
         // Store displacement
         #pragma omp critical
         {
-            DIC_output.disps[frame_idx - 1] = disp_pair.first;
+            DIC_output.disps[frame_idx - 1] = disps;
         }
     }
     

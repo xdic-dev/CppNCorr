@@ -20,6 +20,9 @@ Disp2D Disp2D::load(std::ifstream &is) {
     // Load u
     disp.u = Data2D::load(is);
     
+    // Load cc (correlation coefficient)
+    disp.cc = Data2D::load(is);
+    
     return disp;
 }
     
@@ -27,6 +30,7 @@ Disp2D Disp2D::load(std::ifstream &is) {
 std::ostream& operator<<(std::ostream &os, const Disp2D &disp) {
     os << "V data: " << '\n' << disp.get_v();
     os << '\n' << "U data: " << '\n' << disp.get_u();
+    os << '\n' << "Correlation data: " << '\n' << disp.get_cc();
     
     return os;
 }
@@ -35,17 +39,19 @@ void imshow(const Disp2D &disp, Disp2D::difference_type delay) {
     // Just show each separately for now. If you combine into one buffer, you 
     // must scale each as their ranges might be different.
     imshow(disp.v, delay); 
-    imshow(disp.u, delay); 
+    imshow(disp.u, delay);
+    imshow(disp.cc, delay);  // Also show correlation
 }  
 
 bool isequal(const Disp2D &disp1, const Disp2D &disp2) {
-    return isequal(disp1.v, disp2.v) && isequal(disp1.u, disp2.u);
+    return isequal(disp1.v, disp2.v) && isequal(disp1.u, disp2.u) && isequal(disp1.cc, disp2.cc);
 }
 
 void save(const Disp2D &disp, std::ofstream &os) {        
-    // Save v -> u
+    // Save v -> u -> cc
     save(disp.v, os);
     save(disp.u, os);
+    save(disp.cc, os);  // Save correlation coefficient
 }
 
 // Interpolator --------------------------------------------------------------//
