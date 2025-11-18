@@ -369,8 +369,14 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input&);
 // Conversion between Lagrangian and Eulerian displacements ------------------//
 DIC_analysis_output change_perspective(const DIC_analysis_output&, INTERP);
 
+// Conversion with Matlab-compatible sign inversion for Eulerian perspective -//
+DIC_analysis_output change_perspective_with_inversion(const DIC_analysis_output&, INTERP);
+
 // set units -----------------------------------------------------------------//
 DIC_analysis_output set_units(const DIC_analysis_output&, const std::string&, double);
+
+// Correlation filtering -----------------------------------------------------//
+DIC_analysis_output filter_by_correlation(const DIC_analysis_output&, double);
 
 // strain_analysis -----------------------------------------------------------//
 Strain2D LS_strain(const Disp2D&, PERSPECTIVE, double, SUBREGION, ROI2D::difference_type); 

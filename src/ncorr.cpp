@@ -2393,6 +2393,57 @@ DIC_analysis_output change_perspective(const DIC_analysis_output &DIC_output, IN
     return DIC_output_updated;
 }
 
+// Conversion with Matlab-compatible sign inversion -------------------------//
+DIC_analysis_output change_perspective_with_inversion(const DIC_analysis_output &DIC_output, INTERP interp_type) {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    if (DIC_output.perspective_type == PERSPECTIVE::EULERIAN) {
+        // For now, do not support this perspective change, because by 
+        // default, DIC_analysis() returns the displacement fields in the 
+        // Lagrangian perspective, so this change would be redundant and less 
+        // accurate.
+        throw std::invalid_argument("Changing from Eulerian perspective back to Lagrangian is currently not supported. Just use the original output data from DIC_analysis().");
+    }
+        
+    if (DIC_output.units != "pixels") {
+        // Perform change_perspective_with_inversion() before applying units. This makes things 
+        // simpler.
+        throw std::invalid_argument("Changing from Lagrangian to Eulerian perspective must be done before applying units.");
+    }
+    
+    // Initialize output
+    DIC_analysis_output DIC_output_updated;     
+    DIC_output_updated.perspective_type = PERSPECTIVE::EULERIAN; // This will be Eulerian since only Lagrangian inputs are supported for now.
+    DIC_output_updated.units = DIC_output.units;    
+    DIC_output_updated.units_per_pixel = DIC_output.units_per_pixel;
+    
+    // Cycle over displacement fields and convert
+    std::cout << std::endl << "Changing perspective with sign inversion (Matlab-compatible)..." << std::endl;
+    for (difference_type disp_idx = 0; disp_idx < difference_type(DIC_output.disps.size()); ++disp_idx) {
+        std::cout << "Displacement field " << disp_idx+1 << " of " << DIC_output.disps.size() << "." << std::endl;
+        
+        // Apply perspective conversion via interpolation
+        Disp2D disp_eulerian = details::update(DIC_output.disps[disp_idx], interp_type);
+        
+        // Apply sign inversion to match Matlab convention
+        // Eulerian displacements are negated: u_eulerian = -u_lagrangian
+        // This reflects the change from material (reference) to spatial (current) description
+        auto A_v = disp_eulerian.get_v().get_array() * -1.0;
+        auto A_u = disp_eulerian.get_u().get_array() * -1.0;
+        auto A_cc = disp_eulerian.get_cc().get_array();  // Correlation unchanged
+        
+        DIC_output_updated.disps.push_back(Disp2D(
+            std::move(A_v), 
+            std::move(A_u),
+            std::move(A_cc),
+            disp_eulerian.get_roi(),
+            disp_eulerian.get_scalefactor()
+        ));
+    }
+    
+    return DIC_output_updated;
+}
+
 // set_units -----------------------------------------------------------------//
 DIC_analysis_output set_units(const DIC_analysis_output &DIC_output, const std::string &units, double units_per_pixel) {
     typedef ROI2D::difference_type                              difference_type;
@@ -2413,7 +2464,7 @@ DIC_analysis_output set_units(const DIC_analysis_output &DIC_output, const std::
         // Get copies of displacement fields and apply conversion
         auto A_v = DIC_output.disps[disp_idx].get_v().get_array() * units_per_pixel;
         auto A_u = DIC_output.disps[disp_idx].get_u().get_array() * units_per_pixel;
-        auto A_cc = DIC_output.disps[disp_idx].get_cc().get_array().copy();  // Correlation doesn't scale
+        auto A_cc = DIC_output.disps[disp_idx].get_cc().get_array();  // Correlation doesn't scale
         
         DIC_output_updated.disps.push_back(Disp2D(std::move(A_v), 
                                                   std::move(A_u),
@@ -2423,6 +2474,70 @@ DIC_analysis_output set_units(const DIC_analysis_output &DIC_output, const std::
     }
     
     return DIC_output_updated;
+}
+
+// Correlation filtering -----------------------------------------------------//
+DIC_analysis_output filter_by_correlation(const DIC_analysis_output &DIC_output, double cutoff_corrcoef) {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    if (cutoff_corrcoef < -1.0 || cutoff_corrcoef > 1.0) {
+        throw std::invalid_argument("Correlation coefficient cutoff must be in range [-1.0, 1.0]. Got: " + std::to_string(cutoff_corrcoef));
+    }
+    
+    // Initialize output with same metadata
+    DIC_analysis_output DIC_output_filtered;
+    DIC_output_filtered.perspective_type = DIC_output.perspective_type;
+    DIC_output_filtered.units = DIC_output.units;
+    DIC_output_filtered.units_per_pixel = DIC_output.units_per_pixel;
+    
+    std::cout << std::endl << "Filtering by correlation coefficient (threshold: " << cutoff_corrcoef << ")..." << std::endl;
+    
+    // Process each displacement field
+    for (difference_type disp_idx = 0; disp_idx < difference_type(DIC_output.disps.size()); ++disp_idx) {
+        const auto& disp = DIC_output.disps[disp_idx];
+        const auto& cc_array = disp.get_cc().get_array();
+        const auto& roi_mask = disp.get_roi().get_mask();
+        
+        // Create filtered mask: keep only points above correlation threshold
+        Array2D<bool> mask_filtered(roi_mask.height(), roi_mask.width(), false);
+        difference_type points_kept = 0;
+        difference_type points_total = 0;
+        
+        for (difference_type i = 0; i < roi_mask.height(); ++i) {
+            for (difference_type j = 0; j < roi_mask.width(); ++j) {
+                if (roi_mask(i, j)) {
+                    points_total++;
+                    // Keep point if correlation is above threshold
+                    if (cc_array(i, j) >= cutoff_corrcoef) {
+                        mask_filtered(i, j) = true;
+                        points_kept++;
+                    }
+                }
+            }
+        }
+        
+        std::cout << "  Displacement " << disp_idx+1 << ": kept " << points_kept 
+                  << " / " << points_total << " points";
+        if (points_total > 0) {
+            std::cout << " (" << (100.0 * points_kept / points_total) << "%)";
+        }
+        std::cout << "." << std::endl;
+        
+        // Create new ROI with filtered mask
+        ROI2D roi_filtered(std::move(mask_filtered));
+        
+        // Store displacement with updated ROI
+        // Copy arrays since we're only changing the ROI, not the data
+        DIC_output_filtered.disps.push_back(Disp2D(
+            disp.get_v().get_array(),
+            disp.get_u().get_array(),
+            disp.get_cc().get_array(),
+            roi_filtered,
+            disp.get_scalefactor()
+        ));
+    }
+    
+    return DIC_output_filtered;
 }
 
 // strain_analysis -----------------------------------------------------------//
