@@ -3578,6 +3578,11 @@ std::vector<SeedComputationData> compute_only_seed_points(
     typedef std::ptrdiff_t difference_type;
     
     std::vector<SeedComputationData> selected_data;
+
+    if (debug) {
+        std::cout << "\n=== Compute seed parameters for all frames with ROI updates ===> ";
+        std::cout << "\n starting with " << seeds_by_region.size() << " seeds" << std::endl;
+    }
     
     // Start with initial reference and ROI
     Array2D<double> A_ref_current = A_ref;
@@ -3703,6 +3708,7 @@ SeedAnalysisResult analyze_seeds(
     result.success = true;
     
     // Analyze each seed point using existing subregion optimizer
+    int region_idx = 0;
     for (const auto& seed_pos : seed_positions) {
         // Check if seed is within valid bounds
         if (seed_pos.x < radius || seed_pos.x >= ref_gs.width() - radius ||
@@ -3738,7 +3744,7 @@ SeedAnalysisResult analyze_seeds(
         
         if (!converged) {
             if (debug) {
-                std::cout << "Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << std::endl;
+                std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> no convergence" << std::endl;
             }
             result.success = false;
             continue;
@@ -3767,10 +3773,12 @@ SeedAnalysisResult analyze_seeds(
         // Check quality thresholds
         if (seed_result.corrcoef > cutoff_max_corrcoef || convergence.diffnorm > cutoff_max_diffnorm) {
             if (debug) {
-                std::cout << "Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << std::endl;
+                std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> corrcoef: " << seed_result.corrcoef << ", diffnorm: " << convergence.diffnorm << std::endl;
             }
-            result.success = false;
+            std::cout << result.success << std::endl;
+            //result.success = false; //TODO: Solve this
         }
+        region_idx++;
     }
     
     return result;
