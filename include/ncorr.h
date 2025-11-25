@@ -53,7 +53,7 @@ namespace details {
             mutable Array2D<double> hess_buf; 
             mutable Array2D<double> params; 
             double cutoff_norm = 1e-6;
-            difference_type cutoff_iterations = 50;
+            difference_type cutoff_iterations = 100;
     };
     
     class disp_nloptimizer final : public nloptimizer_base {

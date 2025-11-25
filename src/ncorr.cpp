@@ -2250,6 +2250,7 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
+                std::cout << "Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
                 roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type);
