@@ -201,12 +201,12 @@ int main(int argc, char *argv[]) {
 	DIC_input = DIC_analysis_input(imgs, 							// Images
 									ROI2D(Image2D("images/roi.png").get_gs() > 0.5),		// ROI
 									3,                                         		// scalefactor
-									INTERP::CUBIC_KEYS,			// Interpolation
+									INTERP::QUINTIC_BSPLINE_PRECOMPUTE,			// Interpolation
 									SUBREGION::CIRCLE,					// Subregion shape
 									20,                                        		// Subregion radius
 									4,                                         		// # of threads
 									DIC_analysis_config::NO_UPDATE,				// DIC configuration for reference image updates
-									true);							// Debugging enabled/disabled
+									false);							// Debugging enabled/disabled
 
 	// Perform DIC_analysis    
 	DIC_output = DIC_analysis(DIC_input);

@@ -7,3 +7,5 @@ test/examples/s09
 test/examples/.DS_Store
 .gitignore
 test/examples/ohtcfrp/.DS_Store
+.cache
+compile_commands.json

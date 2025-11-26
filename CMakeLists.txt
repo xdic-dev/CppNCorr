@@ -63,6 +63,20 @@ find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 target_link_libraries(ncorr ${OpenCV_LIBS})
 
+# Add FFTW include directory for IDE support
+find_path(FFTW_INCLUDE_DIR fftw3.h
+  HINTS /opt/homebrew/include /usr/local/include /usr/include
+)
+if(FFTW_INCLUDE_DIR)
+    target_include_directories(ncorr PRIVATE ${FFTW_INCLUDE_DIR})
+    message(STATUS "Found FFTW include: ${FFTW_INCLUDE_DIR}")
+else()
+    message(WARNING "FFTW include directory not found")
+endif()
+
+# Compiler flags
+target_compile_options(ncorr PRIVATE -Wall -Wextra)
+
 # add -fpermissive flag to allow some non-standard code.
 #SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")
 

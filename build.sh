@@ -14,7 +14,7 @@ pushd build
 
 # Run CMake
 echo "Running CMake..."
-cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # Build library
 echo "Building library..."
