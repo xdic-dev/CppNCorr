@@ -1599,7 +1599,9 @@ Disp2D RGDIC(const Array2D<double> &A_ref,
                                 double cutoff_corrcoef,                
                                 bool debug) { 
     typedef ROI2D::difference_type                              difference_type;
-            
+    
+    std::cout << "DEBUG: RGDIC called with num_threads=" << num_threads << std::endl;
+
     if (!A_ref.same_size(A_cur)) {
         throw std::invalid_argument("Attempted to perform RGDIC on reference image input of size: " + A_ref.size_2D_string() + 
                                     " with current image input of size: " + A_cur.size_2D_string() + ". Sizes must be the same.");
@@ -1680,7 +1682,7 @@ Disp2D RGDIC(const Array2D<double> &A_ref,
     }
     
     // Debugging stuff -------------------------------------------------------//    
-    if (debug) {
+    if (false && debug) {
         // These debugging tools are displayed during the RGDIC calculation and 
         // give real-time updates to help assist with analysis.
         
@@ -2253,7 +2255,16 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                 std::cout << "Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
-                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type);
+                auto prev_roi = roi_ref;
+                roi_ref = update(prev_roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type);
+                cv::Mat diff;
+                cv::Mat prev_img = get_cv_img(prev_roi.get_mask(), 0, 255);
+                cv::Mat curr_img = get_cv_img(roi_ref.get_mask(), 0, 255);
+                cv::absdiff(prev_img, curr_img, diff);
+                cv::imwrite("diff_roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
+                cv::imwrite("diff_roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
+                cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
+                std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
             }
         }     
     }
@@ -3460,13 +3471,11 @@ Disp2D compute_displacements(
     const ROI2D& roi_reduced,
     const SeedParams& seedparams,
     ROI2D::difference_type scalefactor,
-    ROI2D::difference_type r,
     double cutoff_corrcoef,
     ROI2D::difference_type region_idx,
     bool debug
 ) {
-    typedef std::ptrdiff_t difference_type;
-    
+
     // Perform RGDIC with manual seed (reliability-guided expansion from seed point)
     auto H = roi_reduced.height();
     auto W = roi_reduced.width();
@@ -3536,13 +3545,13 @@ Disp2D compute_displacements(
     // jumps. Not all are cleared through the RGDIC algorithm because of the 
     // way the search is conducted.
     auto A_vp_buf = A_vp; // Make copy of valid points since it gets overwritten
-    for (difference_type region_idx = 0; region_idx < roi_reduced.size_regions(); ++region_idx) {
-        for (difference_type nl_idx = 0; nl_idx < roi_reduced.get_nlinfo(region_idx).nodelist.width(); ++nl_idx) {
-            difference_type p2 = nl_idx + roi_reduced.get_nlinfo(region_idx).left_nl;
-            for (difference_type np_idx = 0; np_idx < roi_reduced.get_nlinfo(region_idx).noderange(nl_idx); np_idx += 2) {
-                difference_type np_top = roi_reduced.get_nlinfo(region_idx).nodelist(np_idx,nl_idx);
-                difference_type np_bottom = roi_reduced.get_nlinfo(region_idx).nodelist(np_idx + 1,nl_idx);
-                for (difference_type p1 = np_top; p1 <= np_bottom; ++p1) {
+    for (ROI2D::difference_type region_idx = 0; region_idx < roi_reduced.size_regions(); ++region_idx) {
+        for (ROI2D::difference_type nl_idx = 0; nl_idx < roi_reduced.get_nlinfo(region_idx).nodelist.width(); ++nl_idx) {
+            ROI2D::difference_type p2 = nl_idx + roi_reduced.get_nlinfo(region_idx).left_nl;
+            for (ROI2D::difference_type np_idx = 0; np_idx < roi_reduced.get_nlinfo(region_idx).noderange(nl_idx); np_idx += 2) {
+                ROI2D::difference_type np_top = roi_reduced.get_nlinfo(region_idx).nodelist(np_idx,nl_idx);
+                ROI2D::difference_type np_bottom = roi_reduced.get_nlinfo(region_idx).nodelist(np_idx + 1,nl_idx);
+                for (ROI2D::difference_type p1 = np_top; p1 <= np_bottom; ++p1) {
                     if ((roi_reduced.get_nlinfo(region_idx).in_nlinfo(p1-1,p2) && A_vp_buf(p1-1,p2) && std::sqrt(std::pow(A_v(p1-1,p2) - A_v(p1,p2),2) + std::pow(A_u(p1-1,p2) - A_u(p1,p2),2)) > cutoff_delta_disp) ||
                         (roi_reduced.get_nlinfo(region_idx).in_nlinfo(p1+1,p2) && A_vp_buf(p1+1,p2) && std::sqrt(std::pow(A_v(p1+1,p2) - A_v(p1,p2),2) + std::pow(A_u(p1+1,p2) - A_u(p1,p2),2)) > cutoff_delta_disp) ||
                         (roi_reduced.get_nlinfo(region_idx).in_nlinfo(p1,p2-1) && A_vp_buf(p1,p2-1) && std::sqrt(std::pow(A_v(p1,p2-1) - A_v(p1,p2),2) + std::pow(A_u(p1,p2-1) - A_u(p1,p2),2)) > cutoff_delta_disp) ||
@@ -3576,8 +3585,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
     ROI2D::difference_type region_idx,
     bool debug
 ) {
-    typedef std::ptrdiff_t difference_type;
-    
+
     std::vector<SeedComputationData> selected_data;
 
     if (debug) {
@@ -3608,8 +3616,6 @@ std::vector<SeedComputationData> compute_only_seed_points(
             roi_current,
             seeds_current,
             r,
-            scalefactor,
-            1e-6,   // cutoff_diffnorm
             50,     // cutoff_iteration
             0.1,    // cutoff_max_diffnorm
             0.5     // cutoff_max_corrcoef
@@ -3694,14 +3700,11 @@ SeedAnalysisResult analyze_seeds(
     const ROI2D& roi,
     const std::vector<SeedParams>& seed_positions,
     ROI2D::difference_type radius,
-    ROI2D::difference_type scalefactor,
-    double cutoff_diffnorm,
     int cutoff_iteration,
     double cutoff_max_diffnorm,
     double cutoff_max_corrcoef,
     bool debug
 ) {
-    typedef std::ptrdiff_t difference_type;
     
     SeedAnalysisResult result;
     result.seeds.reserve(seed_positions.size());
@@ -3740,12 +3743,23 @@ SeedAnalysisResult analyze_seeds(
         
         // Run IC-GN optimization via global() method
         auto result_pair = sr_nloptimizer.global(params_init);
-        bool converged = result_pair.second;
-        const auto& params_result = result_pair.first;
+        const auto& params_guess = result_pair.first;
         
-        if (!converged) {
+        if (!result_pair.second) {
             if (debug) {
-                std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> no convergence" << std::endl;
+                std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> global failed" << std::endl;
+            }
+            result.success = false;
+            continue;
+        }
+
+        // Run iterative-search
+        auto result_iter = sr_nloptimizer(params_guess);
+        const auto& params_result = result_iter.first;
+
+        if (!result_iter.second) {
+            if (debug) {
+                std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> iterative search failed" << std::endl;
             }
             result.success = false;
             continue;
@@ -3777,7 +3791,7 @@ SeedAnalysisResult analyze_seeds(
                 std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> corrcoef: " << seed_result.corrcoef << ", diffnorm: " << convergence.diffnorm << std::endl;
             }
             std::cout << result.success << std::endl;
-            //result.success = false; //TODO: Solve this
+            result.success = false; //TODO: Solve this
         }
         region_idx++;
     }

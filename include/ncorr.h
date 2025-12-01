@@ -289,8 +289,6 @@ SeedAnalysisResult analyze_seeds(
     const ROI2D& roi,
     const std::vector<SeedParams>& seed_positions,
     ROI2D::difference_type radius,
-    ROI2D::difference_type scalefactor,
-    double cutoff_diffnorm,
     int cutoff_iteration,
     double cutoff_max_diffnorm,
     double cutoff_max_corrcoef,
@@ -317,7 +315,6 @@ std::vector<SeedComputationData> compute_only_seed_points(
     ROI2D::difference_type scalefactor,
     INTERP interp_type,
     SUBREGION subregion_type,
-    ROI2D::difference_type r,
     const std::vector<SeedParams>& seeds_by_region,  // One seed per region
     double cutoff_corrcoef,
     ROI2D::difference_type region_idx = 0,
