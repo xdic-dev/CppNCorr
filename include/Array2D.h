@@ -11,23 +11,13 @@
 #include <cstddef>
 #include <memory>
 #include <iostream>
-#include <iomanip>
 #include <fstream>
 #include <utility>
-#include <exception> 
-#include <thread>
 #include <mutex>                
-#include <functional>
 #include <cmath>
-#include <tuple>
 #include <algorithm>
 #include <limits>
-#include <vector>
 #include <string>
-#include <set>
-#include <stack>
-#include <queue>
-#include <chrono>
 
 // Non standard libraries
 extern "C" {                    // Blas - for matrix multiplication

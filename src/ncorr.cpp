@@ -7,6 +7,7 @@
 
 #include "ncorr.h"
 #include <omp.h>
+#include <thread>
 
 namespace ncorr {
     
@@ -3648,7 +3649,6 @@ std::vector<SeedComputationData> compute_only_seed_points(
                 prev_roi.reduce(scalefactor),
                 prev_seedparams[region_idx],
                 scalefactor,
-                r,
                 cutoff_corrcoef,
                 region_idx,
                 debug
@@ -3893,7 +3893,6 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
             roi_for_frame.reduce(DIC_input.scalefactor),
             seed_params_for_frame,
             DIC_input.scalefactor,
-            DIC_input.r,
             DIC_input.cutoff_corrcoef,
             0,  // region_idx
             DIC_input.debug

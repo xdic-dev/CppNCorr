@@ -327,7 +327,6 @@ Disp2D compute_displacements(
     const ROI2D& roi_reduced,
     const SeedParams& seedparams,
     ROI2D::difference_type scalefactor,
-    ROI2D::difference_type r,
     double cutoff_corrcoef,
     ROI2D::difference_type region_idx,
     bool debug
