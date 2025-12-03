@@ -436,6 +436,13 @@ template <typename T, typename T_container>
 T_container& fill(T_container &A, const Array2D<double>&boundary, const T &val) {    
     typedef ROI2D::difference_type                              difference_type;
     
+    // Check for empty boundary first - this is not an error, just nothing to fill
+    if (boundary.empty() || boundary.height() == 0) {
+        // If boundary is empty just return  
+        std::cout << "Warning: The boundary is empty or the height is equal 0 - just nothing to fill" << std::endl;
+        return A;
+    }
+    
     if (boundary.width() != 2) {
         throw std::invalid_argument("Input boundary has size: " + boundary.size_2D_string() + ". Boundary must have a width of 2.");
     }
@@ -443,11 +450,6 @@ T_container& fill(T_container &A, const Array2D<double>&boundary, const T &val) 
     // Flood fill algorithm from : http://alienryderflex.com/polygon_fill/
     // boundary must have width of 2, where the first column is p1 coordinates
     // and the second column is p2 coordinates.
-    
-    if (boundary.empty()) {
-        // If boundary is empty just return        
-        return A;
-    }
         
     // node_buf is used to hold nodes that are calculated to paint the polygon
     // along the sweep line. It is initialized to hold at least the max number 

@@ -150,7 +150,7 @@ enum class ROI_UPDATE_MODE { SKIP_ALL, SKIP_INVALID };
 
 ROI2D update(const ROI2D&, const Disp2D&, INTERP, ROI_UPDATE_MODE mode = ROI_UPDATE_MODE::SKIP_ALL);
 
-Data2D update(const Data2D&, const Disp2D&, INTERP);
+Data2D update(const Data2D&, const Disp2D&, INTERP, ROI_UPDATE_MODE mode = ROI_UPDATE_MODE::SKIP_ALL);
 
 Disp2D add(const std::vector<Disp2D>&, INTERP);
 

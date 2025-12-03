@@ -904,7 +904,7 @@ namespace details {
     }
 }
 
-Data2D update(const Data2D &data, const Disp2D &disp, INTERP interp_type) {
+Data2D update(const Data2D &data, const Disp2D &disp, INTERP interp_type, ROI_UPDATE_MODE mode) {
     typedef ROI2D::difference_type                              difference_type;
     
     // regions in 'data' and 'disp' must correspond
@@ -926,7 +926,14 @@ Data2D update(const Data2D &data, const Disp2D &disp, INTERP interp_type) {
     }
     
     // Update ROI and then fill in updated regions.
-    auto roi_new = update(data.get_roi(), disp, interp_type);
+    auto roi_new = update(data.get_roi(), disp, interp_type, mode);
+    
+    // Check for empty ROI after update and warn
+    if (roi_new.get_points() == 0) {
+        std::cerr << "WARNING: ROI update in Data2D::update() produced an empty ROI!" << std::endl;
+        std::cerr << "  Original ROI had " << data.get_roi().get_points() << " points." << std::endl;
+        std::cerr << "  Mode: " << (mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+    }
     
     // Get signed distance array for roi_new - this guides queue such that 
     // interior points are updated first.
@@ -2634,10 +2641,10 @@ Disp2D RGDIC_with_seeds(const Array2D<double>& A_ref,
 
 // Conversion between Lagrangian and Eulerian displacements ------------------//
 namespace details {
-    Disp2D update(const Disp2D &disp, INTERP interp_type) {         
-        // Update v and u
-        auto v_updated = update(disp.get_v(), disp, interp_type);
-        auto u_updated = update(disp.get_u(), disp, interp_type);
+    Disp2D update(const Disp2D &disp, INTERP interp_type, ROI_UPDATE_MODE mode = ROI_UPDATE_MODE::SKIP_INVALID) {         
+        // Update v and u - use SKIP_INVALID by default for perspective change robustness
+        auto v_updated = update(disp.get_v(), disp, interp_type, mode);
+        auto u_updated = update(disp.get_u(), disp, interp_type, mode);
 
         // Note that moving arrays is safe because update() creates new Data2Ds
         return { std::move(v_updated.get_array()), std::move(u_updated.get_array()), v_updated.get_roi(), disp.get_scalefactor() };
