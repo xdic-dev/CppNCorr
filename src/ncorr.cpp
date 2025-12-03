@@ -572,13 +572,10 @@ namespace details {
 
 // Interface functions -------------------------------------------------------//
 namespace details {
-    Array2D<double> update_boundary(const Array2D<double> &boundary, const Disp2D::nlinfo_interpolator &disp_interp, const ROI2D::difference_type roi_scalefactor) {
+    // Update boundary with SKIP_ALL mode (original behavior)
+    // Returns empty boundary if ANY point returns NaN
+    Array2D<double> update_boundary_skip_all(const Array2D<double> &boundary, const Disp2D::nlinfo_interpolator &disp_interp, const ROI2D::difference_type roi_scalefactor) {
         typedef ROI2D::difference_type                          difference_type;
-        
-        // For now, points going out of data bounds are left as-is. Preferably,
-        // I'd perform a polygon intersection of the boundary with the data size,
-        // but polygon intersection is very complex to perform in double 
-        // precision.
         
         auto boundary_updated = boundary; // Make a copy
         for (difference_type idx = 0; idx < boundary_updated.height(); ++idx) {
@@ -598,9 +595,69 @@ namespace details {
         
         return boundary_updated;
     }
+    
+    // Update boundary with SKIP_INVALID mode (new robust behavior)
+    // Skips NaN points and out-of-bounds points, only returns empty if ALL points invalid
+    Array2D<double> update_boundary_skip_invalid(
+        const Array2D<double> &boundary, 
+        const Disp2D::nlinfo_interpolator &disp_interp, 
+        const ROI2D::difference_type roi_scalefactor,
+        const ROI2D::difference_type roi_height,
+        const ROI2D::difference_type roi_width,
+        const ROI2D::difference_type margin = 0) {  // margin for bounds checking
+        
+        typedef ROI2D::difference_type                          difference_type;
+        
+        if (boundary.height() == 0) {
+            return Array2D<double>(0,2);
+        }
+        
+        // Collect valid updated points
+        std::vector<std::pair<double, double>> valid_points;
+        valid_points.reserve(boundary.height());
+        
+        for (difference_type idx = 0; idx < boundary.height(); ++idx) {
+            // Get displacement at position of boundary
+            double p1 = boundary(idx,0) * roi_scalefactor;
+            double p2 = boundary(idx,1) * roi_scalefactor;
+            auto disp_pair = disp_interp(p1, p2);
+            
+            // Skip NaN points (interpolation failed)
+            if (std::isnan(disp_pair.first) || std::isnan(disp_pair.second)) {
+                continue;
+            }
+            
+            // Calculate new position
+            double new_p1 = boundary(idx,0) + disp_pair.first / roi_scalefactor;
+            double new_p2 = boundary(idx,1) + disp_pair.second / roi_scalefactor;
+            
+            // Bounds checking: skip points that move outside valid range
+            // Using margin like MATLAB does (typically radius size)
+            if (new_p1 < margin || new_p1 >= roi_height - margin ||
+                new_p2 < margin || new_p2 >= roi_width - margin) {
+                continue;
+            }
+            
+            valid_points.emplace_back(new_p1, new_p2);
+        }
+        
+        // Return empty boundary if all points were invalid
+        if (valid_points.empty()) {
+            return Array2D<double>(0,2);
+        }
+        
+        // Create result array from valid points
+        Array2D<double> boundary_updated(valid_points.size(), 2);
+        for (difference_type i = 0; i < static_cast<difference_type>(valid_points.size()); ++i) {
+            boundary_updated(i,0) = valid_points[i].first;
+            boundary_updated(i,1) = valid_points[i].second;
+        }
+        
+        return boundary_updated;
+    }
 }
 
-ROI2D update(const ROI2D &roi, const Disp2D &disp, INTERP interp_type) {
+ROI2D update(const ROI2D &roi, const Disp2D &disp, INTERP interp_type, ROI_UPDATE_MODE mode) {
     typedef ROI2D::difference_type                              difference_type;
     
     // regions in 'roi' and 'disp' must correspond
@@ -647,13 +704,24 @@ ROI2D update(const ROI2D &roi, const Disp2D &disp, INTERP interp_type) {
         // Form new boundary -------------------------------------------------//
         ROI2D::region_boundary boundary_updated;  
         
-        // Update "add" boundary first    
-        boundary_updated.add = details::update_boundary(boundary.add, disp_interp, roi_scalefactor);        
-        
-        // Update "sub" boundaries next
-        for (auto &sub_boundary : boundary.sub) {
-            boundary_updated.sub.emplace_back(details::update_boundary(sub_boundary, disp_interp, roi_scalefactor));
-        } 
+        if (mode == ROI_UPDATE_MODE::SKIP_ALL) {
+            // Original behavior: fail entire boundary if any point returns NaN
+            boundary_updated.add = details::update_boundary_skip_all(boundary.add, disp_interp, roi_scalefactor);        
+            
+            for (auto &sub_boundary : boundary.sub) {
+                boundary_updated.sub.emplace_back(details::update_boundary_skip_all(sub_boundary, disp_interp, roi_scalefactor));
+            }
+        } else {
+            // SKIP_INVALID mode: skip individual NaN/out-of-bounds points
+            // Use margin=0 for now (could be made configurable if needed)
+            boundary_updated.add = details::update_boundary_skip_invalid(
+                boundary.add, disp_interp, roi_scalefactor, roi.height(), roi.width(), 0);        
+            
+            for (auto &sub_boundary : boundary.sub) {
+                boundary_updated.sub.emplace_back(details::update_boundary_skip_invalid(
+                    sub_boundary, disp_interp, roi_scalefactor, roi.height(), roi.width(), 0));
+            }
+        }
         
         // Store boundary
         boundaries_updated[region_idx] = std::move(boundary_updated);
@@ -2026,6 +2094,7 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
             this->cutoff_corrcoef = 2.0;
             this->update_corrcoef = 4.0;  // Don't ever update
             this->prctile_corrcoef = 1.0;
+            this->roi_update_mode = ROI_UPDATE_MODE::SKIP_ALL;  // Default for no update
             break;
         case DIC_analysis_config::KEEP_MOST_POINTS :
             // This will update as frequently as needed to keep as many points 
@@ -2034,6 +2103,8 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
             this->cutoff_corrcoef = 2.0;
             this->update_corrcoef = 0.5;
             this->prctile_corrcoef = 1.0; // Same as max()
+            // Use SKIP_INVALID to be more robust when updating ROI frequently
+            this->roi_update_mode = ROI_UPDATE_MODE::SKIP_INVALID;
             break;
         case DIC_analysis_config::REMOVE_BAD_POINTS :
             // This will update less frequently and attempt to remove poorly 
@@ -2043,6 +2114,8 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
             this->cutoff_corrcoef = 0.7;
             this->update_corrcoef = 0.35;
             this->prctile_corrcoef = 0.9;
+            // Use SKIP_INVALID to be more robust when updating ROI
+            this->roi_update_mode = ROI_UPDATE_MODE::SKIP_INVALID;
             break;
     }
 }  
@@ -2085,6 +2158,9 @@ DIC_analysis_input DIC_analysis_input::load(std::ifstream &is) {
     
     // Load prctile_corrcoef
     is.read(reinterpret_cast<char*>(&DIC_input.prctile_corrcoef), std::streamsize(sizeof(double)));
+    
+    // Load roi_update_mode 
+    is.read(reinterpret_cast<char*>(&DIC_input.roi_update_mode), std::streamsize(sizeof(ROI_UPDATE_MODE)));
     
     // Load debug
     is.read(reinterpret_cast<char*>(&DIC_input.debug), std::streamsize(sizeof(bool)));
@@ -2138,6 +2214,8 @@ void save(const DIC_analysis_input &DIC_input, std::ofstream &os) {
     os.write(reinterpret_cast<const char*>(&DIC_input.update_corrcoef), std::streamsize(sizeof(double)));   
     
     os.write(reinterpret_cast<const char*>(&DIC_input.prctile_corrcoef), std::streamsize(sizeof(double)));   
+    
+    os.write(reinterpret_cast<const char*>(&DIC_input.roi_update_mode), std::streamsize(sizeof(ROI_UPDATE_MODE)));   
     
     os.write(reinterpret_cast<const char*>(&DIC_input.debug), std::streamsize(sizeof(bool)));  
 }
@@ -2306,7 +2384,19 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
                 auto prev_roi = roi_ref;
-                roi_ref = update(prev_roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type);
+                roi_ref = update(prev_roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
+                
+                // Check if updated ROI is empty and warn/handle
+                if (roi_ref.get_points() == 0) {
+                    std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
+                    std::cerr << "  Previous ROI had " << prev_roi.get_points() << " points." << std::endl;
+                    std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+                    // Revert to previous ROI to prevent crash in subsequent analysis
+                    roi_ref = prev_roi;
+                    ref_idx = cur_idx - 1;  // Keep previous reference
+                    std::cerr << "  Reverting to previous ROI to continue analysis." << std::endl;
+                }
+                
                 cv::Mat diff;
                 cv::Mat prev_img = get_cv_img(prev_roi.get_mask(), 0, 255);
                 cv::Mat curr_img = get_cv_img(roi_ref.get_mask(), 0, 255);
@@ -2396,8 +2486,20 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
                 // Update the reference image index as well as the reference roi
+                auto prev_ref_idx = ref_idx;
+                auto prev_roi = roi_ref;
                 ref_idx = cur_idx;
-                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type);
+                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
+                
+                // Check if updated ROI is empty and warn/handle
+                if (roi_ref.get_points() == 0) {
+                    std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
+                    std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+                    // Revert to previous ROI to prevent crash in subsequent analysis
+                    roi_ref = prev_roi;
+                    ref_idx = prev_ref_idx;
+                    std::cerr << "  Reverting to previous ROI to continue analysis." << std::endl;
+                }
             }
         }     
     }
@@ -2486,8 +2588,20 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
                 // Update the reference image index as well as the reference roi
+                auto prev_ref_idx = ref_idx;
+                auto prev_roi = roi_ref;
                 ref_idx = cur_idx;
-                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type);
+                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
+                
+                // Check if updated ROI is empty and warn/handle
+                if (roi_ref.get_points() == 0) {
+                    std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
+                    std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+                    // Revert to previous ROI to prevent crash in subsequent analysis
+                    roi_ref = prev_roi;
+                    ref_idx = prev_ref_idx;
+                    std::cerr << "  Reverting to previous ROI to continue analysis." << std::endl;
+                }
             }
         }     
     }
