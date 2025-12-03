@@ -4,6 +4,7 @@ test/bin
 test/examples/ohtcfrp/save/
 test/examples/ohtcfrp/video/
 test/examples/s09
+test/examples/s09p1c1
 test/examples/.DS_Store
 .gitignore
 test/examples/ohtcfrp/.DS_Store

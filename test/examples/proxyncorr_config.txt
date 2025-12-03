@@ -1,0 +1,88 @@
+# ProxyNCorr Configuration File
+# Lines starting with # are comments
+# Format: key = value
+
+# ============================================================================
+# Path Configuration
+# ============================================================================
+# Folder containing the image frames (required)
+folder = images
+
+# ROI image path (optional, defaults to <folder>/roi.png)
+# roi = images/roi.png
+
+# Reference image path (optional, defaults to ref.png if exists, else first frame)
+# ref = images/ref.png
+
+# Output directory (optional, defaults to "output")
+output = output
+
+# ============================================================================
+# DIC Analysis Parameters
+# ============================================================================
+# Scale factor for analysis (default: 3)
+scalefactor = 3
+
+# Interpolation type (default: QUINTIC_BSPLINE_PRECOMPUTE)
+# Options: NEAREST, LINEAR, CUBIC_KEYS, CUBIC_KEYS_PRECOMPUTE, 
+#          QUINTIC_BSPLINE, QUINTIC_BSPLINE_PRECOMPUTE
+interp = QUINTIC_BSPLINE_PRECOMPUTE
+
+# Subregion shape (default: CIRCLE)
+# Options: CIRCLE, SQUARE
+subregion = CIRCLE
+
+# Subregion radius in pixels (default: 20)
+radius = 20
+
+# Number of threads for parallel processing (default: 4)
+threads = 4
+
+# DIC configuration for reference image updates (default: NO_UPDATE)
+# Options: NO_UPDATE, KEEP_MOST_POINTS, REMOVE_BAD_POINTS
+dic_config = NO_UPDATE
+
+# Enable debug output (default: false)
+debug = false
+
+# ============================================================================
+# Perspective and Units
+# ============================================================================
+# Interpolation type for perspective change (default: CUBIC_KEYS)
+perspective_interp = CUBIC_KEYS
+
+# Units string (default: mm)
+units = mm
+
+# Units per pixel conversion factor (default: 0.2)
+units_per_pixel = 0.2
+
+# ============================================================================
+# Strain Analysis Parameters
+# ============================================================================
+# Strain subregion shape (default: CIRCLE)
+strain_subregion = CIRCLE
+
+# Strain subregion radius (default: 5)
+strain_radius = 5
+
+# ============================================================================
+# Video Output Parameters
+# ============================================================================
+# Overlay alpha for video output (default: 0.5)
+alpha = 0.5
+
+# Frames per second for video output (default: 15)
+fps = 15
+
+# ============================================================================
+# Output Options
+# ============================================================================
+# Save JSON output (default: true)
+save_json = true
+
+# Save binary output (default: true)
+save_binary = true
+
+# Save video output (default: true)
+save_videos = true
