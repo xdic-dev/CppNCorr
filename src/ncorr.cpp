@@ -2262,8 +2262,8 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                 cv::Mat prev_img = get_cv_img(prev_roi.get_mask(), 0, 255);
                 cv::Mat curr_img = get_cv_img(roi_ref.get_mask(), 0, 255);
                 cv::absdiff(prev_img, curr_img, diff);
-                cv::imwrite("diff_roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
-                cv::imwrite("diff_roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
+                cv::imwrite("roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
+                cv::imwrite("roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
                 cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
                 std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
             }
