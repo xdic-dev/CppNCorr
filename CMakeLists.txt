@@ -1,4 +1,4 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.2)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.14)
 PROJECT(ncorr_library)
 
 # Only tested for g++ on Ubuntu 12.04. This assumes all required libraries have been 
@@ -18,8 +18,8 @@ SET(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 # Add library
 ADD_LIBRARY(ncorr STATIC ${ncorr_src})
 
-# Set C++11 support
-set_property(TARGET ncorr PROPERTY CXX_STANDARD 11)
+# Set C++17 support (required for std::optional and modern features)
+set_property(TARGET ncorr PROPERTY CXX_STANDARD 17)
 set_property(TARGET ncorr PROPERTY CXX_STANDARD_REQUIRED ON)
 
 # Set -03 optimization

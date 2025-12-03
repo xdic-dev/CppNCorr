@@ -1,9 +1,14 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.2)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.14)
 PROJECT(ncorr_test)
 
 # Only tested for g++ on Ubuntu 12.04. This assumes all required libraries have been 
 # installed, so directories to dependent libraries and their headers are not explicitly 
 # included, since the install directories are searched automatically by g++.
+
+# Set C++17 support (required for std::optional and modern features)
+# Must be set before any targets are defined
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set output for executable
 SET(CMAKE_RUNTIME_OUTPUT_DIRECTORY ../bin)
@@ -26,36 +31,6 @@ ADD_EXECUTABLE(ncorr_test_rgdic_verification src/ncorr_test_rgdic_verification.c
 ADD_EXECUTABLE(ncorr_test_sequential src/ncorr_test_sequential.cpp)
 ADD_EXECUTABLE(ncorr_test_parallel src/ncorr_test_parallel.cpp)
 ADD_EXECUTABLE(proxyncorr src/proxyncorr.cpp)
-
-# Set C++11 support
-set_property(TARGET ncorr_test PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_test PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_test_cubic PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_test_cubic PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_test_json PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_test_json PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_test_verif PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_test_verif PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_test_parity PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_test_parity PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET interpolator_test PROPERTY CXX_STANDARD 11)
-set_property(TARGET interpolator_test PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_interpolator_test PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_interpolator_test PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_cubic_interpolator_test PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_cubic_interpolator_test PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_nloptimizer_test PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_nloptimizer_test PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET roi2d_reduce_test PROPERTY CXX_STANDARD 11)
-set_property(TARGET roi2d_reduce_test PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_test_rgdic_verification PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_test_rgdic_verification PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_test_sequential PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_test_sequential PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET ncorr_test_parallel PROPERTY CXX_STANDARD 11)
-set_property(TARGET ncorr_test_parallel PROPERTY CXX_STANDARD_REQUIRED ON)
-set_property(TARGET proxyncorr PROPERTY CXX_STANDARD 11)
-set_property(TARGET proxyncorr PROPERTY CXX_STANDARD_REQUIRED ON)
 
 # Set -03 optimization
 INCLUDE(CheckCXXCompilerFlag)
