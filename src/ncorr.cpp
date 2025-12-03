@@ -1773,7 +1773,9 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
                                                SUBREGION subregion_type, 
                                                ROI2D::difference_type r,
                                                double cutoff_corrcoef,                
-                                               bool debug) { 
+                                               bool debug,
+                                               const std::vector<SeedParams>& seeds_by_region = {},
+                                               bool seeds_are_optimized = false) { 
     typedef ROI2D::difference_type                              difference_type;
             
     if (!A_ref.same_size(A_cur)) {
@@ -1831,33 +1833,80 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
     
     // Process all regions sequentially (without threading)
     // Note: params = {p1, p2, v, u, dv_dp1, dv_dp2, du_dp1, du_dp2, corr_coef, diff_norm}
-                   
-    // For robustness, multiple seeds are placed within each region and the 
-    // seed with the highest correlation coefficient is used in the 
-    // analysis. The higher the number of seeds, the more robust (but slower)
-    // the analysis will be.
-    difference_type num_redundant_seeds = 4; 
-    auto roi_partition_diagram = details::get_ROI_partition_diagram(roi_reduced, num_redundant_seeds);
-    auto redundant_seeds = details::get_ROI_partition_diagram_seeds(roi_partition_diagram, roi_reduced, num_redundant_seeds);
     
-    for (auto &region_seeds: redundant_seeds) {            
-        // Must scale seed position
-        region_seeds = std::move(region_seeds) * scalefactor; 
+    // Check if user provided seeds
+    bool use_provided_seeds = !seeds_by_region.empty();
+    
+    // Storage for auto-generated redundant seeds (only used if seeds not provided)
+    std::vector<Array2D<difference_type>> redundant_seeds;
+    
+    if (!use_provided_seeds) {
+        // For robustness, multiple seeds are placed within each region and the 
+        // seed with the highest correlation coefficient is used in the 
+        // analysis. The higher the number of seeds, the more robust (but slower)
+        // the analysis will be.
+        difference_type num_redundant_seeds = 4; 
+        auto roi_partition_diagram = details::get_ROI_partition_diagram(roi_reduced, num_redundant_seeds);
+        redundant_seeds = details::get_ROI_partition_diagram_seeds(roi_partition_diagram, roi_reduced, num_redundant_seeds);
+        
+        for (auto &region_seeds: redundant_seeds) {            
+            // Must scale seed position
+            region_seeds = std::move(region_seeds) * scalefactor; 
+        }
     }
 
     // Cycle over regions and perform RGDIC sequentially
     Array2D<double> params_buf(10, 1); // buffer for nloptimizer
     for (difference_type region_idx = 0; region_idx < roi_reduced.size_regions(); ++region_idx) {              
-        if (redundant_seeds[region_idx].empty()) {
-            // This region couldn't be seeded - most likely because it was 
-            // too small.
-            continue;
-        }
+        Array2D<double> seed_params;
         
-        // Get seed params for queue
-        auto seed_params = details::get_seed_params(redundant_seeds[region_idx],
-                                           sr_nloptimizer, 
-                                           params_buf);
+        if (use_provided_seeds) {
+            // Use user-provided seed for this region
+            if (region_idx < static_cast<difference_type>(seeds_by_region.size())) {
+                const SeedParams& provided_seed = seeds_by_region[region_idx];
+                
+                if (seeds_are_optimized) {
+                    // Seeds are already optimized - use directly without optimization
+                    seed_params = provided_seed.to_array();
+                } else {
+                    // Seeds need optimization - create seed array and optimize
+                    Array2D<double> single_seed(2, 1);
+                    single_seed(0) = static_cast<double>(provided_seed.y);  // p1
+                    single_seed(1) = static_cast<double>(provided_seed.x);  // p2
+                    
+                    // Initialize params_buf with seed position and provided initial guess
+                    params_buf(0) = single_seed(0);
+                    params_buf(1) = single_seed(1);
+                    params_buf(2) = provided_seed.v;
+                    params_buf(3) = provided_seed.u;
+                    params_buf(4) = provided_seed.dv_dy;
+                    params_buf(5) = provided_seed.dv_dx;
+                    params_buf(6) = provided_seed.du_dy;
+                    params_buf(7) = provided_seed.du_dx;
+                    params_buf(8) = 0.0;  // corrcoef (will be computed)
+                    params_buf(9) = 0.0;  // diff_norm (will be computed)
+                    
+                    // Optimize the seed using nloptimizer
+                    auto result = sr_nloptimizer(params_buf);
+                    if (result.second) {  // converged successfully
+                        seed_params = result.first;
+                    }
+                    // If optimization failed, seed_params remains empty
+                }
+            }
+        } else {
+            // Use auto-generated redundant seeds
+            if (redundant_seeds[region_idx].empty()) {
+                // This region couldn't be seeded - most likely because it was 
+                // too small.
+                continue;
+            }
+            
+            // Get seed params for queue (optimizes and selects best seed)
+            seed_params = details::get_seed_params(redundant_seeds[region_idx],
+                                               sr_nloptimizer, 
+                                               params_buf);
+        }
         
         if (!seed_params.empty()) {    
             A_ap(seed_params(0) / scalefactor, seed_params(1) / scalefactor) = false;
@@ -2359,6 +2408,114 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
     std::cout << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << "." << std::endl;
         
     return DIC_output;
+}
+
+// Sequential DIC analysis with user-provided seeds --------------------------//
+DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &parallel_input) {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    const auto& DIC_input = parallel_input.base_input;
+            
+    if (DIC_input.imgs.size() < 2) {
+        // Must have at least two images for DIC analysis
+        throw std::invalid_argument("Only " + std::to_string(DIC_input.imgs.size()) + " images provided to DIC_analysis(). 2 or more are required.");
+    }
+            
+    // Start timer for entire analysis
+    std::chrono::time_point<std::chrono::system_clock> start_analysis = std::chrono::system_clock::now();
+    
+    // Initialize output - note that output will be WRT the first (reference)
+    // image which is assumed to be the Lagrangian perspective.
+    DIC_analysis_output DIC_output;
+    DIC_output.disps.resize(DIC_input.imgs.size()-1);
+    DIC_output.perspective_type = PERSPECTIVE::LAGRANGIAN;
+    DIC_output.units = "pixels";
+    DIC_output.units_per_pixel = 1.0;
+            
+    // Set ROI for the reference image - this gets updated if reference image 
+    // gets updated. Then, cycle over images and perform DIC.
+    ROI2D roi_ref = DIC_input.roi; 
+    for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
+        // -------------------------------------------------------------------//
+        // Perform RGDIC -----------------------------------------------------//
+        // -------------------------------------------------------------------//
+        std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
+        std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
+        std::cout << "Current image: " << DIC_input.imgs[cur_idx] << "." << std::endl;
+        
+        std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
+        
+        // Use user-provided seeds if available for the first frame pair
+        // For subsequent pairs, seeds may need to be propagated or regenerated
+        const std::vector<SeedParams>& seeds = (cur_idx == 1) ? parallel_input.seeds_by_region : std::vector<SeedParams>{};
+        
+        auto disps = RGDIC_without_thread(DIC_input.imgs[ref_idx].get_gs(), 
+                               DIC_input.imgs[cur_idx].get_gs(), 
+                               roi_ref, 
+                               DIC_input.scalefactor, 
+                               DIC_input.interp_type, 
+                               DIC_input.subregion_type,
+                               DIC_input.r, 
+                               DIC_input.cutoff_corrcoef,
+                               DIC_input.debug,
+                               seeds,
+                               parallel_input.seeds_are_optimized);
+        
+        std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
+        std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
+        std::cout << "Time: " << elapsed_seconds_rgdic.count() << "." << std::endl;
+        // -------------------------------------------------------------------//
+        // -------------------------------------------------------------------//
+        // -------------------------------------------------------------------//
+        
+        // Store displacements
+        if (ref_idx > 0) {
+            // Must "add" displacements before storing if reference image has 
+            // been updated.
+            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
+        } else {
+            DIC_output.disps[cur_idx-1] = disps;
+        }
+        
+        // Test to see if selected correlation coefficient value (based on input
+        // "prctile_corrcoef") for the displacement plot exceeds correlation 
+        // coefficient cutoff value; if it does, then update the reference image.
+        Array2D<double> cc_values = disps.get_cc().get_array()(disps.get_cc().get_roi().get_mask());
+        if (!cc_values.empty()) {
+            double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
+            std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
+            if (selected_corrcoef > DIC_input.update_corrcoef) {
+                // Update the reference image index as well as the reference roi
+                ref_idx = cur_idx;
+                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type);
+            }
+        }     
+    }
+    
+    // End timer for entire analysis
+    std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed_seconds_analysis = end_analysis - start_analysis;
+    std::cout << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << "." << std::endl;
+        
+    return DIC_output;
+}
+
+// RGDIC with user-provided seeds (single frame pair) ------------------------//
+Disp2D RGDIC_with_seeds(const Array2D<double>& A_ref, 
+                        const Array2D<double>& A_cur, 
+                        const ROI2D& roi,
+                        const DIC_analysis_parallel_input& input) {
+    return RGDIC_without_thread(A_ref, 
+                                A_cur, 
+                                roi, 
+                                input.base_input.scalefactor, 
+                                input.base_input.interp_type, 
+                                input.base_input.subregion_type,
+                                input.base_input.r, 
+                                input.base_input.cutoff_corrcoef,
+                                input.base_input.debug,
+                                input.seeds_by_region,
+                                input.seeds_are_optimized);
 }
 
 // Conversion between Lagrangian and Eulerian displacements ------------------//

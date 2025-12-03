@@ -41,6 +41,14 @@ struct ProxyConfig {
     std::string strain_subregion_type = "CIRCLE";
     int strain_radius = 5;
     
+    // Algorithm mode: "auto", "sequential", "parallel"
+    std::string algorithm_mode = "auto";
+    
+    // Seeds configuration (one per region)
+    std::vector<SeedParams> seeds_by_region;
+    std::string seeds_file = "";  // Path to seeds JSON file
+    bool seeds_are_optimized = false;
+    
     // Video parameters
     double alpha = 0.5;
     double fps = 15.0;
@@ -281,6 +289,38 @@ bool file_exists(const std::string& path) {
 }
 
 // ============================================================================
+// Seeds file loading
+// ============================================================================
+std::vector<SeedParams> load_seeds_from_json(const std::string& seeds_path) {
+    std::vector<SeedParams> seeds;
+    std::ifstream file(seeds_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Cannot open seeds file: " + seeds_path);
+    }
+    
+    json j;
+    file >> j;
+    
+    if (j.is_array()) {
+        for (const auto& seed_json : j) {
+            SeedParams seed;
+            seed.x = seed_json.value("x", 0);
+            seed.y = seed_json.value("y", 0);
+            seed.u = seed_json.value("u", 0.0);
+            seed.v = seed_json.value("v", 0.0);
+            seed.du_dx = seed_json.value("du_dx", 0.0);
+            seed.du_dy = seed_json.value("du_dy", 0.0);
+            seed.dv_dx = seed_json.value("dv_dx", 0.0);
+            seed.dv_dy = seed_json.value("dv_dy", 0.0);
+            seed.corrcoef = seed_json.value("corrcoef", 0.0);
+            seeds.push_back(seed);
+        }
+    }
+    
+    return seeds;
+}
+
+// ============================================================================
 // Configuration file parsing
 // ============================================================================
 ProxyConfig parse_config_file(const std::string& config_path) {
@@ -334,6 +374,9 @@ ProxyConfig parse_config_file(const std::string& config_path) {
         else if (key == "save_json") config.save_json = (value == "true" || value == "1");
         else if (key == "save_binary") config.save_binary = (value == "true" || value == "1");
         else if (key == "save_videos") config.save_videos = (value == "true" || value == "1");
+        else if (key == "algorithm_mode") config.algorithm_mode = value;
+        else if (key == "seeds_file") config.seeds_file = value;
+        else if (key == "seeds_are_optimized") config.seeds_are_optimized = (value == "true" || value == "1");
     }
     
     return config;
@@ -362,6 +405,9 @@ void print_usage(const char* prog_name) {
               << "  -p, --units-per-pixel <f>  Units per pixel (default: 0.2)\n"
               << "  --strain-subregion <type>  Strain subregion type (default: CIRCLE)\n"
               << "  --strain-radius <int>      Strain radius (default: 5)\n"
+              << "  -m, --mode <mode>          Algorithm mode: auto, sequential, parallel (default: auto)\n"
+              << "  --seeds <path>             Path to seeds JSON file (one seed per region)\n"
+              << "  --seeds-optimized          Seeds are already optimized (skip optimization)\n"
               << "  -a, --alpha <float>        Video overlay alpha (default: 0.5)\n"
               << "  -F, --fps <float>          Video FPS (default: 15)\n"
               << "  --no-json                  Disable JSON output\n"
@@ -384,8 +430,16 @@ void print_usage(const char* prog_name) {
               << "  units_per_pixel = 0.2\n"
               << "  strain_subregion = CIRCLE\n"
               << "  strain_radius = 5\n"
+              << "  algorithm_mode = auto          # auto, sequential, or parallel\n"
+              << "  seeds_file = path/to/seeds.json\n"
+              << "  seeds_are_optimized = false\n"
               << "  alpha = 0.5\n"
-              << "  fps = 15\n"
+              << "  fps = 15\n\n"
+              << "SEEDS FILE FORMAT (seeds.json):\n"
+              << "  [\n"
+              << "    {\"x\": 100, \"y\": 200, \"u\": 0.0, \"v\": 0.0},\n"
+              << "    {\"x\": 300, \"y\": 400, \"u\": 0.5, \"v\": 0.3}\n"
+              << "  ]\n"
               << std::endl;
 }
 
@@ -411,6 +465,9 @@ int main(int argc, char* argv[]) {
         {"units-per-pixel", required_argument, 0, 'p'},
         {"strain-subregion",required_argument, 0, 1001},
         {"strain-radius",   required_argument, 0, 1002},
+        {"mode",            required_argument, 0, 'm'},
+        {"seeds",           required_argument, 0, 1007},
+        {"seeds-optimized", no_argument,       0, 1008},
         {"alpha",           required_argument, 0, 'a'},
         {"fps",             required_argument, 0, 'F'},
         {"no-json",         no_argument,       0, 1003},
@@ -426,7 +483,7 @@ int main(int argc, char* argv[]) {
     // First pass: check for config file
     int opt;
     int option_index = 0;
-    while ((opt = getopt_long(argc, argv, "f:c:r:R:o:s:i:S:d:t:u:p:a:F:h", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:c:r:R:o:s:i:S:d:t:u:p:m:a:F:h", long_options, &option_index)) != -1) {
         if (opt == 'c') {
             config_file = optarg;
             break;
@@ -443,7 +500,7 @@ int main(int argc, char* argv[]) {
     optind = 1;
     
     // Second pass: override with command line arguments
-    while ((opt = getopt_long(argc, argv, "f:c:r:R:o:s:i:S:d:t:u:p:a:F:h", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:c:r:R:o:s:i:S:d:t:u:p:m:a:F:h", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'f': config.folder = optarg; break;
             case 'c': /* already handled */ break;
@@ -459,6 +516,9 @@ int main(int argc, char* argv[]) {
             case 'p': config.units_per_pixel = std::stod(optarg); break;
             case 1001: config.strain_subregion_type = optarg; break;
             case 1002: config.strain_radius = std::stoi(optarg); break;
+            case 'm': config.algorithm_mode = optarg; break;
+            case 1007: config.seeds_file = optarg; break;
+            case 1008: config.seeds_are_optimized = true; break;
             case 'a': config.alpha = std::stod(optarg); break;
             case 'F': config.fps = std::stod(optarg); break;
             case 1003: config.save_json = false; break;
@@ -529,6 +589,17 @@ int main(int argc, char* argv[]) {
     
     std::cout << "Total images for analysis: " << imgs.size() << std::endl;
     
+    // Load seeds if specified
+    if (!config.seeds_file.empty()) {
+        if (file_exists(config.seeds_file)) {
+            std::cout << "Loading seeds from: " << config.seeds_file << std::endl;
+            config.seeds_by_region = load_seeds_from_json(config.seeds_file);
+            std::cout << "Loaded " << config.seeds_by_region.size() << " seed(s)" << std::endl;
+        } else {
+            std::cerr << "Warning: Seeds file not found: " << config.seeds_file << std::endl;
+        }
+    }
+    
     // Print configuration
     std::cout << "\n=== Configuration ===" << std::endl;
     std::cout << "ROI: " << roi_path << std::endl;
@@ -537,6 +608,16 @@ int main(int argc, char* argv[]) {
     std::cout << "Interpolation: " << config.interp_type << std::endl;
     std::cout << "Subregion: " << config.subregion_type << " (r=" << config.subregion_radius << ")" << std::endl;
     std::cout << "Threads: " << config.num_threads << std::endl;
+    std::cout << "Algorithm mode: " << config.algorithm_mode << std::endl;
+    if (!config.seeds_by_region.empty()) {
+        std::cout << "Seeds: " << config.seeds_by_region.size() << " region(s)";
+        if (config.seeds_are_optimized) {
+            std::cout << " (pre-optimized)";
+        } else {
+            std::cout << " (will be optimized)";
+        }
+        std::cout << std::endl;
+    }
     std::cout << "Units: " << config.units << " (" << config.units_per_pixel << " per pixel)" << std::endl;
     std::cout << "Strain subregion: " << config.strain_subregion_type << " (r=" << config.strain_radius << ")" << std::endl;
     std::cout << "Alpha: " << config.alpha << ", FPS: " << config.fps << std::endl;
@@ -562,9 +643,55 @@ int main(int argc, char* argv[]) {
             config.debug
         );
         
-        // Perform DIC analysis
-        std::cout << "Performing DIC analysis..." << std::endl;
-        DIC_output = DIC_analysis(DIC_input);
+        // Perform DIC analysis based on mode and seeds
+        bool has_seeds = !config.seeds_by_region.empty();
+        std::string effective_mode = config.algorithm_mode;
+        
+        // Determine effective mode
+        if (effective_mode == "auto") {
+            if (has_seeds) {
+                effective_mode = "sequential";  // Use sequential with seeds by default
+                std::cout << "[AUTO MODE] Seeds provided -> using sequential mode with seeds" << std::endl;
+            } else {
+                effective_mode = "parallel";  // Use parallel (threaded) by default
+                std::cout << "[AUTO MODE] No seeds -> using parallel (threaded) mode" << std::endl;
+            }
+        }
+        
+        // Execute based on effective mode
+        if (effective_mode == "sequential") {
+            if (has_seeds) {
+                std::cout << "[SEQUENTIAL MODE] Performing DIC analysis with " 
+                          << config.seeds_by_region.size() << " user-provided seed(s)";
+                if (config.seeds_are_optimized) {
+                    std::cout << " (pre-optimized, skipping optimization step)";
+                }
+                std::cout << "..." << std::endl;
+                
+                DIC_analysis_parallel_input parallel_input(DIC_input, config.seeds_by_region, config.seeds_are_optimized);
+                DIC_output = DIC_analysis_sequential(parallel_input);
+            } else {
+                std::cout << "[SEQUENTIAL MODE] Performing DIC analysis with auto-generated seeds..." << std::endl;
+                DIC_output = DIC_analysis_sequential(DIC_input);
+            }
+        } else if (effective_mode == "parallel") {
+            if (has_seeds) {
+                std::cout << "[PARALLEL MODE] Performing parallel DIC analysis with " 
+                          << config.seeds_by_region.size() << " user-provided seed(s)";
+                if (config.seeds_are_optimized) {
+                    std::cout << " (pre-optimized)";
+                }
+                std::cout << "..." << std::endl;
+                
+                DIC_analysis_parallel_input parallel_input(DIC_input, config.seeds_by_region, config.seeds_are_optimized);
+                DIC_output = DIC_analysis_parallel(parallel_input);
+            } else {
+                std::cout << "[PARALLEL MODE] Performing parallel DIC analysis with auto-generated seeds..." << std::endl;
+                DIC_output = DIC_analysis(DIC_input);
+            }
+        } else {
+            throw std::runtime_error("Unknown algorithm mode: " + effective_mode + ". Use: auto, sequential, or parallel");
+        }
         
         // Convert to Eulerian perspective
         std::cout << "Converting to Eulerian perspective..." << std::endl;

@@ -264,6 +264,39 @@ struct SeedParams final {
     SeedParams() : x(0), y(0), u(0.0), v(0.0), du_dx(0.0), du_dy(0.0), dv_dx(0.0), dv_dy(0.0), corrcoef(0.0) { }
     SeedParams(difference_type x, difference_type y) : 
         x(x), y(y), u(0.0), v(0.0), du_dx(0.0), du_dy(0.0), dv_dx(0.0), dv_dy(0.0), corrcoef(0.0) { }
+    
+    // Convert to Array2D format compatible with RGDIC functions
+    // params = {p1, p2, v, u, dv_dp1, dv_dp2, du_dp1, du_dp2, corr_coef, diff_norm}
+    // Note: p1=y (row), p2=x (col), and gradients map: dv_dp1=dv_dy, dv_dp2=dv_dx, du_dp1=du_dy, du_dp2=du_dx
+    Array2D<double> to_array(double diff_norm = 0.0) const {
+        Array2D<double> params(10, 1);
+        params(0) = static_cast<double>(y);      // p1 (row)
+        params(1) = static_cast<double>(x);      // p2 (col)
+        params(2) = v;                            // v displacement
+        params(3) = u;                            // u displacement
+        params(4) = dv_dy;                        // dv_dp1
+        params(5) = dv_dx;                        // dv_dp2
+        params(6) = du_dy;                        // du_dp1
+        params(7) = du_dx;                        // du_dp2
+        params(8) = corrcoef;                     // correlation coefficient
+        params(9) = diff_norm;                    // difference norm (convergence metric)
+        return params;
+    }
+    
+    // Create SeedParams from Array2D format
+    static SeedParams from_array(const Array2D<double>& params) {
+        SeedParams seed;
+        seed.y = static_cast<difference_type>(params(0));  // p1 (row)
+        seed.x = static_cast<difference_type>(params(1));  // p2 (col)
+        seed.v = params(2);
+        seed.u = params(3);
+        seed.dv_dy = params(4);  // dv_dp1
+        seed.dv_dx = params(5);  // dv_dp2
+        seed.du_dy = params(6);  // du_dp1
+        seed.du_dx = params(7);  // du_dp2
+        seed.corrcoef = params(8);
+        return seed;
+    }
 };
 
 struct SeedConvergence final {
@@ -347,20 +380,32 @@ struct DIC_analysis_parallel_input final {
     // Seed parameters (one per region - provided by user, not generated)
     std::vector<SeedParams> seeds_by_region;
     
+    // Whether seeds are already optimized (skip optimization step if true)
+    bool seeds_are_optimized;
+    
     // Seed-based parallelization parameters
     double cutoff_max_diffnorm;          // Diffnorm threshold for failure prediction
     double cutoff_max_corrcoef;          // Corrcoef threshold for failure prediction
     
     // Constructors
-    DIC_analysis_parallel_input() : cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
+    DIC_analysis_parallel_input() : seeds_are_optimized(false), cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
     
-    DIC_analysis_parallel_input(const DIC_analysis_input& base, const std::vector<SeedParams>& seeds) : 
-        base_input(base), seeds_by_region(seeds),
+    DIC_analysis_parallel_input(const DIC_analysis_input& base, const std::vector<SeedParams>& seeds, bool optimized = false) : 
+        base_input(base), seeds_by_region(seeds), seeds_are_optimized(optimized),
         cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
 };
 
 // Parallel DIC analysis using seed-based failure prediction
 DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input&);
+
+// Sequential DIC analysis with user-provided seeds
+DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input&);
+
+// RGDIC with user-provided seeds (single frame pair)
+Disp2D RGDIC_with_seeds(const Array2D<double>& A_ref, 
+                        const Array2D<double>& A_cur, 
+                        const ROI2D& roi,
+                        const DIC_analysis_parallel_input& input);
 
 // Conversion between Lagrangian and Eulerian displacements ------------------//
 DIC_analysis_output change_perspective(const DIC_analysis_output&, INTERP);
