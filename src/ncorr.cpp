@@ -1098,6 +1098,132 @@ Disp2D add(const std::vector<Disp2D> &disps, INTERP interp_type) {
     return { std::move(A_v_added), std::move(A_u_added), std::move(A_cc_combined), roi.form_union(A_vp), scalefactor };  
 }
 
+// MATLAB-style add function - uses each displacement's own ROI for bounds checking
+// This is more robust when ROIs change shape during analysis (e.g., after ROI updates)
+Disp2D add_with_rois(const std::vector<Disp2D> &disps, const std::vector<ROI2D> &rois, INTERP interp_type) {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    // This will add displacements WRT the configuration of the first displacement
+    // plot, using each displacement's corresponding ROI for bounds checking.
+    
+    if (disps.empty()) {
+        return Disp2D();
+    } else if (disps.size() == 1) {
+        return disps.front();
+    }
+    
+    // Validate inputs
+    if (disps.size() != rois.size()) {
+        throw std::invalid_argument("Number of displacements (" + std::to_string(disps.size()) + 
+                                    ") must match number of ROIs (" + std::to_string(rois.size()) + ").");
+    }
+    
+    // Check that all have same scalefactor, data size, and number of regions
+    difference_type scalefactor = disps.front().get_scalefactor();
+    const auto &roi_first = rois.front();
+    for (difference_type idx = 1; idx < difference_type(disps.size()); ++idx) {
+        if (disps[idx].get_scalefactor() != scalefactor ||
+            disps[idx].data_height() != disps.front().data_height() ||
+            disps[idx].data_width() != disps.front().data_width() ||
+            rois[idx].size_regions() != roi_first.size_regions()) {
+            throw std::invalid_argument("Attempted to add displacements with differing scalefactors, sizes, or number of regions.");
+        }
+    }
+    
+    // Form buffers using the first ROI as the reference frame
+    Array2D<bool> A_vp(roi_first.height(), roi_first.width());       
+    Array2D<double> A_v_added(roi_first.height(), roi_first.width());
+    Array2D<double> A_u_added(roi_first.height(), roi_first.width());
+    Array2D<double> A_cc_combined(roi_first.height(), roi_first.width());
+    A_cc_combined() = 1.0;
+    
+    // Border for extrapolation (matching MATLAB's border_interp = 20)
+    const difference_type border_interp = 20;
+    
+    for (difference_type region_idx = 0; region_idx < roi_first.size_regions(); ++region_idx) {
+        // Get nlinfo interpolators for each displacement field for this region
+        std::vector<Disp2D::nlinfo_interpolator> disp_nlinfo_interps;
+        for (difference_type disp_idx = 0; disp_idx < difference_type(disps.size()); ++disp_idx) {
+            disp_nlinfo_interps.push_back(disps[disp_idx].get_nlinfo_interpolator(region_idx, interp_type));
+        }
+        
+        // Cycle over each point in the FIRST ROI
+        for (difference_type nl_idx = 0; nl_idx < roi_first.get_nlinfo(region_idx).nodelist.width(); ++nl_idx) {
+            difference_type p2_unscaled = nl_idx + roi_first.get_nlinfo(region_idx).left_nl;
+            difference_type p2 = p2_unscaled * scalefactor;
+            for (difference_type np_idx = 0; np_idx < roi_first.get_nlinfo(region_idx).noderange(nl_idx); np_idx += 2) {
+                difference_type np_top = roi_first.get_nlinfo(region_idx).nodelist(np_idx,nl_idx);
+                difference_type np_bottom = roi_first.get_nlinfo(region_idx).nodelist(np_idx + 1,nl_idx);
+                for (difference_type p1_unscaled = np_top; p1_unscaled <= np_bottom; ++p1_unscaled) {
+                    difference_type p1 = p1_unscaled * scalefactor;
+                    
+                    // Forward propagate this point through all displacements
+                    bool prop_success = true;
+                    double v_added = 0;
+                    double u_added = 0;
+                    double cc_min = 1.0;
+                    
+                    double x_cur = static_cast<double>(p1);
+                    double y_cur = static_cast<double>(p2);
+                    
+                    for (difference_type disp_idx = 0; disp_idx < difference_type(disps.size()); ++disp_idx) {
+                        // Check if current position is within bounds of THIS displacement's ROI
+                        // (with some tolerance for interpolation near boundaries)
+                        difference_type x_cur_unscaled = std::round(x_cur / scalefactor);
+                        difference_type y_cur_unscaled = std::round(y_cur / scalefactor);
+                        
+                        // Check bounds against THIS displacement's ROI (not the first one)
+                        bool in_bounds = false;
+                        const difference_type window = border_interp / scalefactor;  // Allow some extrapolation
+                        for (difference_type y_win = y_cur_unscaled - window; y_win <= y_cur_unscaled + window && !in_bounds; ++y_win) {
+                            for (difference_type x_win = x_cur_unscaled - window; x_win <= x_cur_unscaled + window && !in_bounds; ++x_win) {
+                                if (rois[disp_idx].get_nlinfo(region_idx).in_nlinfo(x_win, y_win)) {
+                                    in_bounds = true;
+                                }
+                            }
+                        }
+                        
+                        if (in_bounds) {
+                            // Interpolate displacement at current position
+                            auto disp_pair = disp_nlinfo_interps[disp_idx](x_cur, y_cur);
+                            
+                            if (!std::isnan(disp_pair.first) && !std::isnan(disp_pair.second)) {
+                                double cc_val = disp_nlinfo_interps[disp_idx].get_cc(x_cur, y_cur);
+                                cc_min = std::min(cc_min, cc_val);
+                                
+                                // Accumulate displacements
+                                v_added += disp_pair.first;
+                                u_added += disp_pair.second;
+                                
+                                // Update current position for next displacement
+                                x_cur += disp_pair.first;
+                                y_cur += disp_pair.second;
+                            } else {
+                                prop_success = false;
+                                break;
+                            }
+                        } else {
+                            prop_success = false;
+                            break;
+                        }
+                    }
+                    
+                    // If point was successfully propagated through all displacements, store it
+                    if (prop_success) {
+                        A_v_added(p1_unscaled, p2_unscaled) = v_added;
+                        A_u_added(p1_unscaled, p2_unscaled) = u_added;
+                        A_cc_combined(p1_unscaled, p2_unscaled) = cc_min;
+                        A_vp(p1_unscaled, p2_unscaled) = true;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Form result ROI from valid points
+    return { std::move(A_v_added), std::move(A_u_added), std::move(A_cc_combined), roi_first.form_union(A_vp), scalefactor };
+}
+
 // DIC_analysis --------------------------------------------------------------//
 namespace details {        
     Array2D<double> get_centroid(const ROI2D::region_nlinfo &nlinfo) {
@@ -2102,6 +2228,8 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
             this->update_corrcoef = 4.0;  // Don't ever update
             this->prctile_corrcoef = 1.0;
             this->roi_update_mode = ROI_UPDATE_MODE::SKIP_ALL;  // Default for no update
+            // ON_THE_FLY is fine since no updates occur (ref_idx stays 0)
+            this->accumulation_mode = ACCUMULATION_MODE::ON_THE_FLY;
             break;
         case DIC_analysis_config::KEEP_MOST_POINTS :
             // This will update as frequently as needed to keep as many points 
@@ -2112,6 +2240,8 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
             this->prctile_corrcoef = 1.0; // Same as max()
             // Use SKIP_INVALID to be more robust when updating ROI frequently
             this->roi_update_mode = ROI_UPDATE_MODE::SKIP_INVALID;
+            // POST_PROCESS (MATLAB-style) to handle ROI changes during updates
+            this->accumulation_mode = ACCUMULATION_MODE::POST_PROCESS;
             break;
         case DIC_analysis_config::REMOVE_BAD_POINTS :
             // This will update less frequently and attempt to remove poorly 
@@ -2123,6 +2253,8 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
             this->prctile_corrcoef = 0.9;
             // Use SKIP_INVALID to be more robust when updating ROI
             this->roi_update_mode = ROI_UPDATE_MODE::SKIP_INVALID;
+            // POST_PROCESS (MATLAB-style) to handle ROI changes during updates
+            this->accumulation_mode = ACCUMULATION_MODE::POST_PROCESS;
             break;
     }
 }  
@@ -2168,6 +2300,9 @@ DIC_analysis_input DIC_analysis_input::load(std::ifstream &is) {
     
     // Load roi_update_mode 
     is.read(reinterpret_cast<char*>(&DIC_input.roi_update_mode), std::streamsize(sizeof(ROI_UPDATE_MODE)));
+    
+    // Load accumulation_mode 
+    is.read(reinterpret_cast<char*>(&DIC_input.accumulation_mode), std::streamsize(sizeof(ACCUMULATION_MODE)));
     
     // Load debug
     is.read(reinterpret_cast<char*>(&DIC_input.debug), std::streamsize(sizeof(bool)));
@@ -2223,6 +2358,8 @@ void save(const DIC_analysis_input &DIC_input, std::ofstream &os) {
     os.write(reinterpret_cast<const char*>(&DIC_input.prctile_corrcoef), std::streamsize(sizeof(double)));   
     
     os.write(reinterpret_cast<const char*>(&DIC_input.roi_update_mode), std::streamsize(sizeof(ROI_UPDATE_MODE)));   
+    
+    os.write(reinterpret_cast<const char*>(&DIC_input.accumulation_mode), std::streamsize(sizeof(ACCUMULATION_MODE)));   
     
     os.write(reinterpret_cast<const char*>(&DIC_input.debug), std::streamsize(sizeof(bool)));  
 }
@@ -2338,6 +2475,21 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
     DIC_output.perspective_type = PERSPECTIVE::LAGRANGIAN;
     DIC_output.units = "pixels";
     DIC_output.units_per_pixel = 1.0;
+    
+    // For POST_PROCESS mode: store step displacements and their ROIs
+    // step_disps[i] = displacement from frame step_ref_idx[i] to frame i+1
+    // step_rois[i] = ROI used when computing step_disps[i]
+    std::vector<Disp2D> step_disps;
+    std::vector<ROI2D> step_rois;
+    std::vector<difference_type> step_ref_idx;  // ref_idx for each step
+    
+    const bool use_post_process = (DIC_input.accumulation_mode == ACCUMULATION_MODE::POST_PROCESS);
+    if (use_post_process) {
+        step_disps.resize(DIC_input.imgs.size()-1);
+        step_rois.resize(DIC_input.imgs.size()-1);
+        step_ref_idx.resize(DIC_input.imgs.size()-1);
+        std::cout << "Using POST_PROCESS (MATLAB-style) accumulation mode." << std::endl;
+    }
             
     // Set ROI for the reference image - this gets updated if reference image 
     // gets updated. Then, cycle over images and perform DIC.
@@ -2370,13 +2522,35 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
         // -------------------------------------------------------------------//
         // -------------------------------------------------------------------//
         
-        // Store displacements
-        if (ref_idx > 0) {
-            // Must "add" displacements before storing if reference image has 
-            // been updated.
-            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
-        } else {
+        // Store displacements based on accumulation mode
+        if (use_post_process) {
+            // POST_PROCESS mode: Store step displacement with its ROI
+            step_disps[cur_idx-1] = disps;
+            step_rois[cur_idx-1] = roi_ref;  // ROI used for this step
+            step_ref_idx[cur_idx-1] = ref_idx;
+            // Temporarily store current disps (will be replaced in post-processing)
             DIC_output.disps[cur_idx-1] = disps;
+        } else {
+            // ON_THE_FLY mode: Accumulate displacements immediately
+            if (ref_idx > 0) {
+                auto added_disps = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
+                
+                if (added_disps.get_roi().get_points() == 0) {
+                    std::cerr << "WARNING: add() at frame " << cur_idx << " produced empty ROI!" << std::endl;
+                    std::cerr << "  Previous disp[" << ref_idx-1 << "] had " << DIC_output.disps[ref_idx-1].get_roi().get_points() << " points." << std::endl;
+                    std::cerr << "  Current disps had " << disps.get_roi().get_points() << " points." << std::endl;
+                    std::cerr << "  Using current disps directly instead of combined result." << std::endl;
+                    DIC_output.disps[cur_idx-1] = disps;
+                } else if (added_disps.get_roi().get_points() < disps.get_roi().get_points() / 2) {
+                    std::cerr << "WARNING: add() at frame " << cur_idx << " lost significant points!" << std::endl;
+                    std::cerr << "  Current disps: " << disps.get_roi().get_points() << ", Combined: " << added_disps.get_roi().get_points() << std::endl;
+                    DIC_output.disps[cur_idx-1] = added_disps;
+                } else {
+                    DIC_output.disps[cur_idx-1] = added_disps;
+                }
+            } else {
+                DIC_output.disps[cur_idx-1] = disps;
+            }
         }
         
         // Test to see if selected correlation coefficient value (based on input
@@ -2388,10 +2562,11 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
                 std::cout << "Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
+                auto prev_ref_idx = ref_idx;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
                 auto prev_roi = roi_ref;
-                roi_ref = update(prev_roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
+                roi_ref = update(prev_roi, use_post_process ? disps : DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
                 
                 // Check if updated ROI is empty and warn/handle
                 if (roi_ref.get_points() == 0) {
@@ -2400,20 +2575,63 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                     std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
                     // Revert to previous ROI to prevent crash in subsequent analysis
                     roi_ref = prev_roi;
-                    ref_idx = cur_idx - 1;  // Keep previous reference
-                    std::cerr << "  Reverting to previous ROI to continue analysis." << std::endl;
+                    ref_idx = prev_ref_idx;  // Keep previous reference
+                    std::cerr << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis." << std::endl;
                 }
                 
-                cv::Mat diff;
-                cv::Mat prev_img = get_cv_img(prev_roi.get_mask(), 0, 255);
-                cv::Mat curr_img = get_cv_img(roi_ref.get_mask(), 0, 255);
-                cv::absdiff(prev_img, curr_img, diff);
-                cv::imwrite("roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
-                cv::imwrite("roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
-                cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
-                std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
+                if (DIC_input.debug) {
+                    cv::Mat diff;
+                    cv::Mat prev_img = get_cv_img(prev_roi.get_mask(), 0, 255);
+                    cv::Mat curr_img = get_cv_img(roi_ref.get_mask(), 0, 255);
+                    cv::absdiff(prev_img, curr_img, diff);
+                    cv::imwrite("roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
+                    cv::imwrite("roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
+                    cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
+                    std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
+                }
             }
         }     
+    }
+    
+    // POST_PROCESS mode: Combine step displacements at the end
+    if (use_post_process) {
+        std::cout << std::endl << "Post-processing: Combining step displacements..." << std::endl;
+        
+        for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
+            // Find chain of step displacements needed to reach this frame
+            std::vector<Disp2D> chain_disps;
+            std::vector<ROI2D> chain_rois;
+            
+            // Build chain backwards from cur_idx to frame 0
+            difference_type idx = cur_idx - 1;
+            while (idx >= 0) {
+                chain_disps.insert(chain_disps.begin(), step_disps[idx]);
+                chain_rois.insert(chain_rois.begin(), step_rois[idx]);
+                
+                if (step_ref_idx[idx] == 0) {
+                    break;  // Reached the original reference
+                }
+                idx = step_ref_idx[idx] - 1;  // Go to the reference frame's step
+            }
+            
+            if (chain_disps.size() == 1) {
+                // Single step, no need to add
+                DIC_output.disps[cur_idx-1] = chain_disps[0];
+            } else {
+                // Multiple steps - use add_with_rois for proper ROI handling
+                auto combined = add_with_rois(chain_disps, chain_rois, DIC_input.interp_type);
+                
+                if (combined.get_roi().get_points() == 0) {
+                    std::cerr << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!" << std::endl;
+                    std::cerr << "  Using last step displacement instead." << std::endl;
+                    DIC_output.disps[cur_idx-1] = step_disps[cur_idx-1];
+                } else {
+                    DIC_output.disps[cur_idx-1] = combined;
+                    std::cout << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps, " 
+                              << combined.get_roi().get_points() << " valid points." << std::endl;
+                }
+            }
+        }
     }
     
     // End timer for entire analysis
@@ -2429,28 +2647,32 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
     typedef ROI2D::difference_type                              difference_type;
             
     if (DIC_input.imgs.size() < 2) {
-        // Must have at least two images for DIC analysis
         throw std::invalid_argument("Only " + std::to_string(DIC_input.imgs.size()) + " images provided to DIC_analysis(). 2 or more are required.");
     }
             
-    // Start timer for entire analysis
     std::chrono::time_point<std::chrono::system_clock> start_analysis = std::chrono::system_clock::now();
     
-    // Initialize output - note that output will be WRT the first (reference)
-    // image which is assumed to be the Lagrangian perspective.
     DIC_analysis_output DIC_output;
     DIC_output.disps.resize(DIC_input.imgs.size()-1);
     DIC_output.perspective_type = PERSPECTIVE::LAGRANGIAN;
     DIC_output.units = "pixels";
     DIC_output.units_per_pixel = 1.0;
+    
+    // For POST_PROCESS mode: store step displacements and their ROIs
+    std::vector<Disp2D> step_disps;
+    std::vector<ROI2D> step_rois;
+    std::vector<difference_type> step_ref_idx;
+    
+    const bool use_post_process = (DIC_input.accumulation_mode == ACCUMULATION_MODE::POST_PROCESS);
+    if (use_post_process) {
+        step_disps.resize(DIC_input.imgs.size()-1);
+        step_rois.resize(DIC_input.imgs.size()-1);
+        step_ref_idx.resize(DIC_input.imgs.size()-1);
+        std::cout << "Using POST_PROCESS (MATLAB-style) accumulation mode." << std::endl;
+    }
             
-    // Set ROI for the reference image - this gets updated if reference image 
-    // gets updated. Then, cycle over images and perform DIC.
     ROI2D roi_ref = DIC_input.roi; 
     for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
-        // -------------------------------------------------------------------//
-        // Perform RGDIC -----------------------------------------------------//
-        // -------------------------------------------------------------------//
         std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
         std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
         std::cout << "Current image: " << DIC_input.imgs[cur_idx] << "." << std::endl;
@@ -2464,54 +2686,98 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
                                DIC_input.interp_type, 
                                DIC_input.subregion_type,
                                DIC_input.r, 
-                               //DIC_input.num_threads,
                                DIC_input.cutoff_corrcoef,
                                DIC_input.debug);
         
         std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
         std::cout << "Time: " << elapsed_seconds_rgdic.count() << "." << std::endl;
-        // -------------------------------------------------------------------//
-        // -------------------------------------------------------------------//
-        // -------------------------------------------------------------------//
         
-        // Store displacements
-        if (ref_idx > 0) {
-            // Must "add" displacements before storing if reference image has 
-            // been updated.
-            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
-        } else {
+        // Store displacements based on accumulation mode
+        if (use_post_process) {
+            step_disps[cur_idx-1] = disps;
+            step_rois[cur_idx-1] = roi_ref;
+            step_ref_idx[cur_idx-1] = ref_idx;
             DIC_output.disps[cur_idx-1] = disps;
+        } else {
+            if (ref_idx > 0) {
+                auto added_disps = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
+                if (added_disps.get_roi().get_points() == 0) {
+                    std::cerr << "WARNING: add() at frame " << cur_idx << " produced empty ROI! Using current disps." << std::endl;
+                    DIC_output.disps[cur_idx-1] = disps;
+                } else {
+                    DIC_output.disps[cur_idx-1] = added_disps;
+                }
+            } else {
+                DIC_output.disps[cur_idx-1] = disps;
+            }
         }
         
-        // Test to see if selected correlation coefficient value (based on input
-        // "prctile_corrcoef") for the displacement plot exceeds correlation 
-        // coefficient cutoff value; if it does, then update the reference image.
         Array2D<double> cc_values = disps.get_cc().get_array()(disps.get_cc().get_roi().get_mask());
         if (!cc_values.empty()) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
-                // Update the reference image index as well as the reference roi
+                std::cout << "Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
                 auto prev_ref_idx = ref_idx;
-                auto prev_roi = roi_ref;
+                // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
-                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
+                auto prev_roi = roi_ref;
+                roi_ref = update(prev_roi, use_post_process ? disps : DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
                 
                 // Check if updated ROI is empty and warn/handle
                 if (roi_ref.get_points() == 0) {
                     std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
+                    std::cerr << "  Previous ROI had " << prev_roi.get_points() << " points." << std::endl;
                     std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
                     // Revert to previous ROI to prevent crash in subsequent analysis
                     roi_ref = prev_roi;
-                    ref_idx = prev_ref_idx;
-                    std::cerr << "  Reverting to previous ROI to continue analysis." << std::endl;
+                    ref_idx = prev_ref_idx;  // Keep previous reference
+                    std::cerr << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis." << std::endl;
+                }
+                
+                if (DIC_input.debug) {
+                    cv::Mat diff;
+                    cv::Mat prev_img = get_cv_img(prev_roi.get_mask(), 0, 255);
+                    cv::Mat curr_img = get_cv_img(roi_ref.get_mask(), 0, 255);
+                    cv::absdiff(prev_img, curr_img, diff);
+                    cv::imwrite("roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
+                    cv::imwrite("roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
+                    cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
+                    std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
                 }
             }
         }     
     }
     
-    // End timer for entire analysis
+    // POST_PROCESS mode: Combine step displacements at the end
+    if (use_post_process) {
+        std::cout << std::endl << "Post-processing: Combining step displacements..." << std::endl;
+        for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
+            std::vector<Disp2D> chain_disps;
+            std::vector<ROI2D> chain_rois;
+            difference_type idx = cur_idx - 1;
+            while (idx >= 0) {
+                chain_disps.insert(chain_disps.begin(), step_disps[idx]);
+                chain_rois.insert(chain_rois.begin(), step_rois[idx]);
+                if (step_ref_idx[idx] == 0) break;
+                idx = step_ref_idx[idx] - 1;
+            }
+            if (chain_disps.size() == 1) {
+                DIC_output.disps[cur_idx-1] = chain_disps[0];
+            } else {
+                auto combined = add_with_rois(chain_disps, chain_rois, DIC_input.interp_type);
+                if (combined.get_roi().get_points() == 0) {
+                    std::cerr << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!" << std::endl;
+                    DIC_output.disps[cur_idx-1] = step_disps[cur_idx-1];
+                } else {
+                    DIC_output.disps[cur_idx-1] = combined;
+                    std::cout << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps." << std::endl;
+                }
+            }
+        }
+    }
+    
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
     std::chrono::duration<double> elapsed_seconds_analysis = end_analysis - start_analysis;
     std::cout << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << "." << std::endl;
@@ -2526,36 +2792,38 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
     const auto& DIC_input = parallel_input.base_input;
             
     if (DIC_input.imgs.size() < 2) {
-        // Must have at least two images for DIC analysis
         throw std::invalid_argument("Only " + std::to_string(DIC_input.imgs.size()) + " images provided to DIC_analysis(). 2 or more are required.");
     }
             
-    // Start timer for entire analysis
     std::chrono::time_point<std::chrono::system_clock> start_analysis = std::chrono::system_clock::now();
     
-    // Initialize output - note that output will be WRT the first (reference)
-    // image which is assumed to be the Lagrangian perspective.
     DIC_analysis_output DIC_output;
     DIC_output.disps.resize(DIC_input.imgs.size()-1);
     DIC_output.perspective_type = PERSPECTIVE::LAGRANGIAN;
     DIC_output.units = "pixels";
     DIC_output.units_per_pixel = 1.0;
+    
+    // For POST_PROCESS mode: store step displacements and their ROIs
+    std::vector<Disp2D> step_disps;
+    std::vector<ROI2D> step_rois;
+    std::vector<difference_type> step_ref_idx;
+    
+    const bool use_post_process = (DIC_input.accumulation_mode == ACCUMULATION_MODE::POST_PROCESS);
+    if (use_post_process) {
+        step_disps.resize(DIC_input.imgs.size()-1);
+        step_rois.resize(DIC_input.imgs.size()-1);
+        step_ref_idx.resize(DIC_input.imgs.size()-1);
+        std::cout << "Using POST_PROCESS (MATLAB-style) accumulation mode." << std::endl;
+    }
             
-    // Set ROI for the reference image - this gets updated if reference image 
-    // gets updated. Then, cycle over images and perform DIC.
     ROI2D roi_ref = DIC_input.roi; 
     for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
-        // -------------------------------------------------------------------//
-        // Perform RGDIC -----------------------------------------------------//
-        // -------------------------------------------------------------------//
         std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
         std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
         std::cout << "Current image: " << DIC_input.imgs[cur_idx] << "." << std::endl;
         
         std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
         
-        // Use user-provided seeds if available for the first frame pair
-        // For subsequent pairs, seeds may need to be propagated or regenerated
         const std::vector<SeedParams>& seeds = (cur_idx == 1) ? parallel_input.seeds_by_region : std::vector<SeedParams>{};
         
         auto disps = RGDIC_without_thread(DIC_input.imgs[ref_idx].get_gs(), 
@@ -2573,47 +2841,92 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
         std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
         std::cout << "Time: " << elapsed_seconds_rgdic.count() << "." << std::endl;
-        // -------------------------------------------------------------------//
-        // -------------------------------------------------------------------//
-        // -------------------------------------------------------------------//
         
-        // Store displacements
-        if (ref_idx > 0) {
-            // Must "add" displacements before storing if reference image has 
-            // been updated.
-            DIC_output.disps[cur_idx-1] = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
-        } else {
+        // Store displacements based on accumulation mode
+        if (use_post_process) {
+            step_disps[cur_idx-1] = disps;
+            step_rois[cur_idx-1] = roi_ref;
+            step_ref_idx[cur_idx-1] = ref_idx;
             DIC_output.disps[cur_idx-1] = disps;
+        } else {
+            if (ref_idx > 0) {
+                auto added_disps = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
+                if (added_disps.get_roi().get_points() == 0) {
+                    std::cerr << "WARNING: add() at frame " << cur_idx << " produced empty ROI! Using current disps." << std::endl;
+                    DIC_output.disps[cur_idx-1] = disps;
+                } else {
+                    DIC_output.disps[cur_idx-1] = added_disps;
+                }
+            } else {
+                DIC_output.disps[cur_idx-1] = disps;
+            }
         }
         
-        // Test to see if selected correlation coefficient value (based on input
-        // "prctile_corrcoef") for the displacement plot exceeds correlation 
-        // coefficient cutoff value; if it does, then update the reference image.
         Array2D<double> cc_values = disps.get_cc().get_array()(disps.get_cc().get_roi().get_mask());
         if (!cc_values.empty()) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
-                // Update the reference image index as well as the reference roi
+                std::cout << "Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
                 auto prev_ref_idx = ref_idx;
-                auto prev_roi = roi_ref;
+                // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
-                roi_ref = update(DIC_input.roi, DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
+                auto prev_roi = roi_ref;
+                roi_ref = update(prev_roi, use_post_process ? disps : DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
                 
                 // Check if updated ROI is empty and warn/handle
                 if (roi_ref.get_points() == 0) {
                     std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
+                    std::cerr << "  Previous ROI had " << prev_roi.get_points() << " points." << std::endl;
                     std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
                     // Revert to previous ROI to prevent crash in subsequent analysis
                     roi_ref = prev_roi;
-                    ref_idx = prev_ref_idx;
-                    std::cerr << "  Reverting to previous ROI to continue analysis." << std::endl;
+                    ref_idx = prev_ref_idx;  // Keep previous reference
+                    std::cerr << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis." << std::endl;
+                }
+                
+                if (DIC_input.debug) {
+                    cv::Mat diff;
+                    cv::Mat prev_img = get_cv_img(prev_roi.get_mask(), 0, 255);
+                    cv::Mat curr_img = get_cv_img(roi_ref.get_mask(), 0, 255);
+                    cv::absdiff(prev_img, curr_img, diff);
+                    cv::imwrite("roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
+                    cv::imwrite("roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
+                    cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
+                    std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
                 }
             }
         }     
     }
     
-    // End timer for entire analysis
+    // POST_PROCESS mode: Combine step displacements at the end
+    if (use_post_process) {
+        std::cout << std::endl << "Post-processing: Combining step displacements..." << std::endl;
+        for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
+            std::vector<Disp2D> chain_disps;
+            std::vector<ROI2D> chain_rois;
+            difference_type idx = cur_idx - 1;
+            while (idx >= 0) {
+                chain_disps.insert(chain_disps.begin(), step_disps[idx]);
+                chain_rois.insert(chain_rois.begin(), step_rois[idx]);
+                if (step_ref_idx[idx] == 0) break;
+                idx = step_ref_idx[idx] - 1;
+            }
+            if (chain_disps.size() == 1) {
+                DIC_output.disps[cur_idx-1] = chain_disps[0];
+            } else {
+                auto combined = add_with_rois(chain_disps, chain_rois, DIC_input.interp_type);
+                if (combined.get_roi().get_points() == 0) {
+                    std::cerr << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!" << std::endl;
+                    DIC_output.disps[cur_idx-1] = step_disps[cur_idx-1];
+                } else {
+                    DIC_output.disps[cur_idx-1] = combined;
+                    std::cout << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps." << std::endl;
+                }
+            }
+        }
+    }
+    
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
     std::chrono::duration<double> elapsed_seconds_analysis = end_analysis - start_analysis;
     std::cout << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << "." << std::endl;

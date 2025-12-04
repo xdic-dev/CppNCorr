@@ -148,11 +148,23 @@ namespace details {
 //                 valid points. Only returns empty if ALL points are invalid.
 enum class ROI_UPDATE_MODE { SKIP_ALL, SKIP_INVALID };
 
+// Accumulation modes:
+// - ON_THE_FLY: Original C++ behavior - accumulate displacements during analysis.
+//               Fast but can fail when ROI changes shape during updates.
+// - POST_PROCESS: MATLAB-like approach - store individual step displacements,
+//                 then add them all at the end with their matching ROIs.
+//                 More robust when ROI updates occur frequently.
+enum class ACCUMULATION_MODE { ON_THE_FLY, POST_PROCESS };
+
 ROI2D update(const ROI2D&, const Disp2D&, INTERP, ROI_UPDATE_MODE mode = ROI_UPDATE_MODE::SKIP_ALL);
 
 Data2D update(const Data2D&, const Disp2D&, INTERP, ROI_UPDATE_MODE mode = ROI_UPDATE_MODE::SKIP_ALL);
 
+// Original add function - combines displacements using first disp's ROI
 Disp2D add(const std::vector<Disp2D>&, INTERP);
+
+// MATLAB-style add function - combines displacements using each disp's own ROI for bounds checking
+Disp2D add_with_rois(const std::vector<Disp2D>& disps, const std::vector<ROI2D>& rois, INTERP interp_type);
 
 // DIC_analysis --------------------------------------------------------------//
 Disp2D RGDIC(const Array2D<double>&, const Array2D<double>&, const ROI2D&, ROI2D::difference_type, INTERP, SUBREGION, ROI2D::difference_type, ROI2D::difference_type, double, bool);
@@ -163,7 +175,7 @@ struct DIC_analysis_input final {
     typedef ROI2D::difference_type                              difference_type;
         
     // Rule of 5 and destructor ----------------------------------------------//    
-    DIC_analysis_input() : scalefactor(), interp_type(), subregion_type(), r(), num_threads(), cutoff_corrcoef(), update_corrcoef(), prctile_corrcoef(), roi_update_mode(ROI_UPDATE_MODE::SKIP_ALL), debug() { }
+    DIC_analysis_input() : scalefactor(), interp_type(), subregion_type(), r(), num_threads(), cutoff_corrcoef(), update_corrcoef(), prctile_corrcoef(), roi_update_mode(ROI_UPDATE_MODE::SKIP_ALL), accumulation_mode(ACCUMULATION_MODE::ON_THE_FLY), debug() { }
     DIC_analysis_input(const DIC_analysis_input&) = default;
     DIC_analysis_input(DIC_analysis_input&&) = default;
     DIC_analysis_input& operator=(const DIC_analysis_input&) = default;
@@ -182,7 +194,8 @@ struct DIC_analysis_input final {
                        double update_corrcoef,
                        double prctile_corrcoef,
                        bool debug,
-                       ROI_UPDATE_MODE roi_update_mode = ROI_UPDATE_MODE::SKIP_ALL) : 
+                       ROI_UPDATE_MODE roi_update_mode = ROI_UPDATE_MODE::SKIP_ALL,
+                       ACCUMULATION_MODE accumulation_mode = ACCUMULATION_MODE::ON_THE_FLY) : 
                                      imgs(imgs),
                                      roi(roi),
                                      scalefactor(scalefactor),
@@ -194,6 +207,7 @@ struct DIC_analysis_input final {
                                      update_corrcoef(update_corrcoef),
                                      prctile_corrcoef(prctile_corrcoef), 
                                      roi_update_mode(roi_update_mode),
+                                     accumulation_mode(accumulation_mode),
                                      debug(debug) { }    
     
     DIC_analysis_input(const std::vector<Image2D>&, const ROI2D&, difference_type, INTERP, SUBREGION, difference_type, difference_type, DIC_analysis_config, bool);
@@ -217,6 +231,7 @@ struct DIC_analysis_input final {
     double update_corrcoef;
     double prctile_corrcoef;
     ROI_UPDATE_MODE roi_update_mode;  // Mode for ROI boundary update (SKIP_ALL or SKIP_INVALID)
+    ACCUMULATION_MODE accumulation_mode;  // Mode for displacement accumulation (ON_THE_FLY or POST_PROCESS)
     bool debug;
 };
 
