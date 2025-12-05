@@ -1,6 +1,13 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 3.14)
 PROJECT(ncorr_library)
 
+# Include FetchContent fallbacks for systems without root access
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(FetchDependencies)
+
+# Option to force fetching all dependencies (useful for reproducible builds)
+option(FORCE_FETCH_DEPENDENCIES "Force using FetchContent for all dependencies" OFF)
+
 # Only tested for g++ on Ubuntu 12.04. This assumes all required libraries have been 
 # installed, so directories to dependent libraries and their headers are not explicitly 
 # included, since the install directories are searched automatically by g++.
@@ -55,23 +62,21 @@ else()
     message(WARNING "OpenMP not found - parallel features will be disabled")
 endif()
 
-# Set include directories
-SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isystem /opt/homebrew/include")
+# Set include directories (only for Mac Homebrew)
+if(APPLE)
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -isystem /opt/homebrew/include")
+endif()
 
-# Find OpenCV
-find_package(OpenCV REQUIRED)
+# Find OpenCV (with FetchContent fallback)
+find_or_fetch_opencv()
 include_directories(${OpenCV_INCLUDE_DIRS})
 target_link_libraries(ncorr ${OpenCV_LIBS})
 
-# Add FFTW include directory for IDE support
-find_path(FFTW_INCLUDE_DIR fftw3.h
-  HINTS /opt/homebrew/include /usr/local/include /usr/include
-)
+# Find FFTW (with FetchContent fallback)
+find_or_fetch_fftw()
 if(FFTW_INCLUDE_DIR)
     target_include_directories(ncorr PRIVATE ${FFTW_INCLUDE_DIR})
-    message(STATUS "Found FFTW include: ${FFTW_INCLUDE_DIR}")
-else()
-    message(WARNING "FFTW include directory not found")
+    message(STATUS "FFTW include: ${FFTW_INCLUDE_DIR}")
 endif()
 
 # Compiler flags
