@@ -8,7 +8,10 @@
 #ifndef ROI2D_H
 #define	ROI2D_H
 
+#include <stack>
+
 #include "Array2D.h"
+
 
 namespace ncorr {    
     
