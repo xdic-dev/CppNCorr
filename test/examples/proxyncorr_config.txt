@@ -86,3 +86,21 @@ save_binary = true
 
 # Save video output (default: true)
 save_videos = true
+
+# ============================================================================
+# Algorithm Mode and Seeds
+# ============================================================================
+# Algorithm mode (default: auto)
+# Options: auto, sequential, parallel
+# - auto: uses parallel if no seeds, sequential if seeds provided
+# - sequential: single-threaded RGDIC analysis
+# - parallel: multi-threaded RGDIC analysis
+# algorithm_mode = auto
+
+# Path to seeds JSON file (optional)
+# Format: [{"x": 100, "y": 200, "u": 0.0, "v": 0.0}, ...]
+# seeds_file = seeds.json
+
+# Whether seeds are pre-optimized (default: false)
+# If true, skips the seed optimization step
+# seeds_are_optimized = false
