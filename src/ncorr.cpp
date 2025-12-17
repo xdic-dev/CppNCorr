@@ -2211,7 +2211,10 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
                                        ROI2D::difference_type r,
                                        ROI2D::difference_type num_threads,
                                        DIC_analysis_config config_type,
-                                       bool debug) : imgs(imgs),
+                                       bool debug,
+                                       ROI_UPDATE_MODE roi_update_mode_override,
+                                       ACCUMULATION_MODE accumulation_mode_override,
+                                       bool save_disps_steps_override) : imgs(imgs),
                                                      roi(roi),
                                                      scalefactor(scalefactor),
                                                      interp_type(interp_type),
@@ -2222,40 +2225,42 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
     // Set parameters to some preset configuration
     switch (config_type) {
         case DIC_analysis_config::NO_UPDATE :
-            // This will never update the reference image. Use this configuration
-            // for images with low deformation.
             this->cutoff_corrcoef = 2.0;
             this->update_corrcoef = 4.0;  // Don't ever update
             this->prctile_corrcoef = 1.0;
-            this->roi_update_mode = ROI_UPDATE_MODE::SKIP_ALL;  // Default for no update
-            // ON_THE_FLY is fine since no updates occur (ref_idx stays 0)
+            this->roi_update_mode = ROI_UPDATE_MODE::SKIP_ALL;
             this->accumulation_mode = ACCUMULATION_MODE::ON_THE_FLY;
             break;
         case DIC_analysis_config::KEEP_MOST_POINTS :
-            // This will update as frequently as needed to keep as many points 
-            // as possible. Use this configuration for samples undergoing large, 
-            // continuous deformation.
             this->cutoff_corrcoef = 2.0;
             this->update_corrcoef = 0.5;
-            this->prctile_corrcoef = 1.0; // Same as max()
-            // Use SKIP_INVALID to be more robust when updating ROI frequently
+            this->prctile_corrcoef = 1.0;
             this->roi_update_mode = ROI_UPDATE_MODE::SKIP_INVALID;
-            // POST_PROCESS (MATLAB-style) to handle ROI changes during updates
             this->accumulation_mode = ACCUMULATION_MODE::POST_PROCESS;
             break;
         case DIC_analysis_config::REMOVE_BAD_POINTS :
-            // This will update less frequently and attempt to remove poorly 
-            // analyzed points. Use this configuration for samples which have 
-            // large deformation with some discontinuous deformation. This will 
-            // attempt to remove the points near the discontinuity.
             this->cutoff_corrcoef = 0.7;
             this->update_corrcoef = 0.35;
             this->prctile_corrcoef = 0.9;
-            // Use SKIP_INVALID to be more robust when updating ROI
             this->roi_update_mode = ROI_UPDATE_MODE::SKIP_INVALID;
-            // POST_PROCESS (MATLAB-style) to handle ROI changes during updates
             this->accumulation_mode = ACCUMULATION_MODE::POST_PROCESS;
             break;
+    }
+    
+    // Apply manual overrides if provided (use -1 as sentinel for "not specified")
+    if (roi_update_mode_override != static_cast<ROI_UPDATE_MODE>(-1)) {
+        this->roi_update_mode = roi_update_mode_override;
+        std::cout << "Manual override: roi_update_mode = " << (roi_update_mode_override == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+    }
+    if (accumulation_mode_override != static_cast<ACCUMULATION_MODE>(-1)) {
+        this->accumulation_mode = accumulation_mode_override;
+        std::cout << "Manual override: accumulation_mode = " << (accumulation_mode_override == ACCUMULATION_MODE::ON_THE_FLY ? "ON_THE_FLY" : "POST_PROCESS") << std::endl;
+    }
+    
+    // Set save_disps_steps (enforced if debug is true)
+    this->save_disps_steps = save_disps_steps_override || debug;
+    if (this->save_disps_steps) {
+        std::cout << "Step displacement data will be saved (save_disps_steps=true)" << std::endl;
     }
 }  
 
@@ -2303,6 +2308,9 @@ DIC_analysis_input DIC_analysis_input::load(std::ifstream &is) {
     
     // Load accumulation_mode 
     is.read(reinterpret_cast<char*>(&DIC_input.accumulation_mode), std::streamsize(sizeof(ACCUMULATION_MODE)));
+    
+    // Load save_disps_steps
+    is.read(reinterpret_cast<char*>(&DIC_input.save_disps_steps), std::streamsize(sizeof(bool)));
     
     // Load debug
     is.read(reinterpret_cast<char*>(&DIC_input.debug), std::streamsize(sizeof(bool)));
@@ -2360,6 +2368,8 @@ void save(const DIC_analysis_input &DIC_input, std::ofstream &os) {
     os.write(reinterpret_cast<const char*>(&DIC_input.roi_update_mode), std::streamsize(sizeof(ROI_UPDATE_MODE)));   
     
     os.write(reinterpret_cast<const char*>(&DIC_input.accumulation_mode), std::streamsize(sizeof(ACCUMULATION_MODE)));   
+    
+    os.write(reinterpret_cast<const char*>(&DIC_input.save_disps_steps), std::streamsize(sizeof(bool)));   
     
     os.write(reinterpret_cast<const char*>(&DIC_input.debug), std::streamsize(sizeof(bool)));  
 }
@@ -2454,6 +2464,86 @@ void save(const DIC_analysis_output &DIC_output, const std::string &filename) {
     save(DIC_output, os);
         
     // Close stream
+    os.close();
+}
+
+// DIC_analysis_step_data save/load -------------------------------------------//
+DIC_analysis_step_data DIC_analysis_step_data::load(std::ifstream &is) {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    DIC_analysis_step_data step_data;
+    
+    // Load step_disps
+    difference_type num_disps = 0;
+    is.read(reinterpret_cast<char*>(&num_disps), std::streamsize(sizeof(difference_type)));
+    step_data.step_disps.resize(num_disps);
+    for (auto &disp : step_data.step_disps) {
+        disp = Disp2D::load(is);
+    }
+    
+    // Load step_rois
+    difference_type num_rois = 0;
+    is.read(reinterpret_cast<char*>(&num_rois), std::streamsize(sizeof(difference_type)));
+    step_data.step_rois.resize(num_rois);
+    for (auto &roi : step_data.step_rois) {
+        roi = ROI2D::load(is);
+    }
+    
+    // Load step_ref_idx
+    difference_type num_ref_idx = 0;
+    is.read(reinterpret_cast<char*>(&num_ref_idx), std::streamsize(sizeof(difference_type)));
+    step_data.step_ref_idx.resize(num_ref_idx);
+    for (auto &idx : step_data.step_ref_idx) {
+        is.read(reinterpret_cast<char*>(&idx), std::streamsize(sizeof(difference_type)));
+    }
+    
+    return step_data;
+}
+
+DIC_analysis_step_data DIC_analysis_step_data::load(const std::string &filename) {
+    std::ifstream is(filename.c_str(), std::ios::in | std::ios::binary);
+    if (!is.is_open()) {
+        throw std::invalid_argument("Could not open " + filename + " for loading DIC_analysis_step_data.");
+    }
+    
+    auto step_data = DIC_analysis_step_data::load(is);
+    is.close();
+    
+    return step_data;
+}
+
+void save(const DIC_analysis_step_data &step_data, std::ofstream &os) {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    // Save step_disps
+    difference_type num_disps = step_data.step_disps.size();
+    os.write(reinterpret_cast<const char*>(&num_disps), std::streamsize(sizeof(difference_type)));
+    for (const auto &disp : step_data.step_disps) {
+        save(disp, os);
+    }
+    
+    // Save step_rois
+    difference_type num_rois = step_data.step_rois.size();
+    os.write(reinterpret_cast<const char*>(&num_rois), std::streamsize(sizeof(difference_type)));
+    for (const auto &roi : step_data.step_rois) {
+        save(roi, os);
+    }
+    
+    // Save step_ref_idx
+    difference_type num_ref_idx = step_data.step_ref_idx.size();
+    os.write(reinterpret_cast<const char*>(&num_ref_idx), std::streamsize(sizeof(difference_type)));
+    for (const auto &idx : step_data.step_ref_idx) {
+        os.write(reinterpret_cast<const char*>(&idx), std::streamsize(sizeof(difference_type)));
+    }
+}
+
+void save(const DIC_analysis_step_data &step_data, const std::string &filename) {
+    std::ofstream os(filename.c_str(), std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!os.is_open()) {
+        throw std::invalid_argument("Could not open " + filename + " for saving DIC_analysis_step_data.");
+    }
+    
+    save(step_data, os);
     os.close();
 }
 
@@ -2634,6 +2724,18 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
         }
     }
     
+    // Save step data if requested
+    if (DIC_input.save_disps_steps && use_post_process && !step_disps.empty()) {
+        DIC_analysis_step_data step_data;
+        step_data.step_disps = step_disps;
+        step_data.step_rois = step_rois;
+        step_data.step_ref_idx = step_ref_idx;
+        
+        std::string step_filename = "DIC_analysis_step_data.bin";
+        save(step_data, step_filename);
+        std::cout << "Step displacement data saved to " << step_filename << std::endl;
+    }
+    
     // End timer for entire analysis
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
     std::chrono::duration<double> elapsed_seconds_analysis = end_analysis - start_analysis;
@@ -2776,6 +2878,18 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
                 }
             }
         }
+    }
+    
+    // Save step data if requested
+    if (DIC_input.save_disps_steps && use_post_process && !step_disps.empty()) {
+        DIC_analysis_step_data step_data;
+        step_data.step_disps = step_disps;
+        step_data.step_rois = step_rois;
+        step_data.step_ref_idx = step_ref_idx;
+        
+        std::string step_filename = "DIC_analysis_sequential_step_data.bin";
+        save(step_data, step_filename);
+        std::cout << "Step displacement data saved to " << step_filename << std::endl;
     }
     
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
@@ -2925,6 +3039,18 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
                 }
             }
         }
+    }
+    
+    // Save step data if requested
+    if (DIC_input.save_disps_steps && use_post_process && !step_disps.empty()) {
+        DIC_analysis_step_data step_data;
+        step_data.step_disps = step_disps;
+        step_data.step_rois = step_rois;
+        step_data.step_ref_idx = step_ref_idx;
+        
+        std::string step_filename = "DIC_analysis_sequential_seeds_step_data.bin";
+        save(step_data, step_filename);
+        std::cout << "Step displacement data saved to " << step_filename << std::endl;
     }
     
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();

@@ -175,7 +175,7 @@ struct DIC_analysis_input final {
     typedef ROI2D::difference_type                              difference_type;
         
     // Rule of 5 and destructor ----------------------------------------------//    
-    DIC_analysis_input() : scalefactor(), interp_type(), subregion_type(), r(), num_threads(), cutoff_corrcoef(), update_corrcoef(), prctile_corrcoef(), roi_update_mode(ROI_UPDATE_MODE::SKIP_ALL), accumulation_mode(ACCUMULATION_MODE::ON_THE_FLY), debug() { }
+    DIC_analysis_input() : scalefactor(), interp_type(), subregion_type(), r(), num_threads(), cutoff_corrcoef(), update_corrcoef(), prctile_corrcoef(), roi_update_mode(ROI_UPDATE_MODE::SKIP_ALL), accumulation_mode(ACCUMULATION_MODE::ON_THE_FLY), save_disps_steps(false), debug() { }
     DIC_analysis_input(const DIC_analysis_input&) = default;
     DIC_analysis_input(DIC_analysis_input&&) = default;
     DIC_analysis_input& operator=(const DIC_analysis_input&) = default;
@@ -195,7 +195,8 @@ struct DIC_analysis_input final {
                        double prctile_corrcoef,
                        bool debug,
                        ROI_UPDATE_MODE roi_update_mode = ROI_UPDATE_MODE::SKIP_ALL,
-                       ACCUMULATION_MODE accumulation_mode = ACCUMULATION_MODE::ON_THE_FLY) : 
+                       ACCUMULATION_MODE accumulation_mode = ACCUMULATION_MODE::ON_THE_FLY,
+                       bool save_disps_steps = false) : 
                                      imgs(imgs),
                                      roi(roi),
                                      scalefactor(scalefactor),
@@ -208,9 +209,14 @@ struct DIC_analysis_input final {
                                      prctile_corrcoef(prctile_corrcoef), 
                                      roi_update_mode(roi_update_mode),
                                      accumulation_mode(accumulation_mode),
+                                     save_disps_steps(save_disps_steps || debug),  // Enforce if debug is true
                                      debug(debug) { }    
     
-    DIC_analysis_input(const std::vector<Image2D>&, const ROI2D&, difference_type, INTERP, SUBREGION, difference_type, difference_type, DIC_analysis_config, bool);
+    // Constructor with config - can optionally override roi_update_mode and accumulation_mode
+    DIC_analysis_input(const std::vector<Image2D>&, const ROI2D&, difference_type, INTERP, SUBREGION, difference_type, difference_type, DIC_analysis_config, bool, 
+                       ROI_UPDATE_MODE roi_update_mode_override = static_cast<ROI_UPDATE_MODE>(-1),
+                       ACCUMULATION_MODE accumulation_mode_override = static_cast<ACCUMULATION_MODE>(-1),
+                       bool save_disps_steps_override = false);
         
     // Static factory methods ------------------------------------------------//
     static DIC_analysis_input load(std::ifstream&);
@@ -232,6 +238,7 @@ struct DIC_analysis_input final {
     double prctile_corrcoef;
     ROI_UPDATE_MODE roi_update_mode;  // Mode for ROI boundary update (SKIP_ALL or SKIP_INVALID)
     ACCUMULATION_MODE accumulation_mode;  // Mode for displacement accumulation (ON_THE_FLY or POST_PROCESS)
+    bool save_disps_steps;  // If true, save step displacements data for debugging (enforced when debug=true)
     bool debug;
 };
 
@@ -264,6 +271,34 @@ struct DIC_analysis_output final {
     PERSPECTIVE perspective_type;
     std::string units;
     double units_per_pixel;
+};
+
+// Step displacement data for debugging and analysis
+struct DIC_analysis_step_data final {
+    typedef ROI2D::difference_type                              difference_type;
+    
+    // Rule of 5 and destructor
+    DIC_analysis_step_data() = default;
+    DIC_analysis_step_data(const DIC_analysis_step_data&) = default;
+    DIC_analysis_step_data(DIC_analysis_step_data&&) = default;
+    DIC_analysis_step_data& operator=(const DIC_analysis_step_data&) = default;
+    DIC_analysis_step_data& operator=(DIC_analysis_step_data&&) = default;
+    ~DIC_analysis_step_data() noexcept = default;
+    
+    // Static factory methods
+    static DIC_analysis_step_data load(std::ifstream&);
+    static DIC_analysis_step_data load(const std::string&);
+    
+    // Interface functions
+    friend void save(const DIC_analysis_step_data&, std::ofstream&);
+    friend void save(const DIC_analysis_step_data&, const std::string&);
+    
+    // Step displacements: step_disps[i] = displacement from frame step_ref_idx[i] to frame i+1
+    std::vector<Disp2D> step_disps;
+    // ROIs used when computing each step displacement
+    std::vector<ROI2D> step_rois;
+    // Reference frame index for each step
+    std::vector<difference_type> step_ref_idx;
 };
 
 DIC_analysis_output DIC_analysis(const DIC_analysis_input&);
