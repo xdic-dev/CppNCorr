@@ -2062,9 +2062,11 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
         Array2D<double> seed_params;
         
         if (use_provided_seeds) {
+            std::cout << "WARNING - Using provided seed for region " << region_idx << std::endl;
             // Use user-provided seed for this region
             if (region_idx < static_cast<difference_type>(seeds_by_region.size())) {
                 const SeedParams& provided_seed = seeds_by_region[region_idx];
+                std::cout << "DEBUG::Provided seed: " << provided_seed.y << " " << provided_seed.x << std::endl;
                 
                 if (seeds_are_optimized) {
                     // Seeds are already optimized - use directly without optimization
@@ -2093,6 +2095,7 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
                         seed_params = result.first;
                     }
                     // If optimization failed, seed_params remains empty
+                    std::cout << "DEBUG::Optimized seed: " << seed_params(0) << " " << seed_params(1) << std::endl;
                 }
             }
         } else {
@@ -2651,7 +2654,7 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
-                std::cout << "Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
+                std::cout << "DA::Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
                 auto prev_ref_idx = ref_idx;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
@@ -2745,7 +2748,7 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
 }
 
 
-DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input) {
+DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input, const std::vector<SeedParams>& seeds_by_region, bool seeds_are_optimized) {
     typedef ROI2D::difference_type                              difference_type;
             
     if (DIC_input.imgs.size() < 2) {
@@ -2773,7 +2776,10 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
         std::cout << "Using POST_PROCESS (MATLAB-style) accumulation mode." << std::endl;
     }
             
-    ROI2D roi_ref = DIC_input.roi; 
+    ROI2D roi_ref = DIC_input.roi;
+    // Mutable copy of seeds so we can propagate them when ROI updates
+    std::vector<SeedParams> current_seeds = seeds_by_region;
+    bool current_seeds_optimized = seeds_are_optimized;
     for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
         std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
         std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
@@ -2789,7 +2795,9 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
                                DIC_input.subregion_type,
                                DIC_input.r, 
                                DIC_input.cutoff_corrcoef,
-                               DIC_input.debug);
+                               DIC_input.debug,
+                               current_seeds,
+                               current_seeds_optimized);
         
         std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
@@ -2820,12 +2828,61 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
-                std::cout << "Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
+                std::cout << "DAS::Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
                 auto prev_ref_idx = ref_idx;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
                 auto prev_roi = roi_ref;
                 roi_ref = update(prev_roi, use_post_process ? disps : DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
+                
+                // Update the seeds_by_region according to the ROI change:
+                // Move each seed based on last displacement, snap to grid, validate in new ROI
+                if (!current_seeds.empty()) {
+                    const auto& disp_for_seeds = use_post_process ? disps : DIC_output.disps[cur_idx-1];
+                    const auto& u_arr = disp_for_seeds.get_u().get_array();
+                    const auto& v_arr = disp_for_seeds.get_v().get_array();
+                    difference_type sf = DIC_input.scalefactor;
+                    std::vector<SeedParams> updated_seeds;
+                    updated_seeds.reserve(current_seeds.size());
+                    for (const auto& seed : current_seeds) {
+                        // Sample displacement at current seed position (reduced coords)
+                        difference_type ry = seed.y / sf;
+                        difference_type rx = seed.x / sf;
+                        if (ry >= 0 && ry < u_arr.height() && rx >= 0 && rx < u_arr.width()) {
+                            double du = u_arr(ry, rx) * sf;
+                            double dv = v_arr(ry, rx) * sf;
+                            // New position snapped to spacing grid
+                            difference_type new_x = seed.x + static_cast<difference_type>(std::round(du / sf) * sf);
+                            difference_type new_y = seed.y + static_cast<difference_type>(std::round(dv / sf) * sf);
+                            // Validate new position is inside the updated ROI
+                            difference_type nry = new_y / sf;
+                            difference_type nrx = new_x / sf;
+                            const auto& new_mask = roi_ref.get_mask();
+                            if (nry >= 0 && nry < new_mask.height() && nrx >= 0 && nrx < new_mask.width() && new_mask(nry, nrx)) {
+                                SeedParams new_seed;
+                                new_seed.x = new_x;
+                                new_seed.y = new_y;
+                                // Reset displacement guess (new reference frame)
+                                new_seed.u = 0.0;
+                                new_seed.v = 0.0;
+                                new_seed.du_dx = 0.0;
+                                new_seed.du_dy = 0.0;
+                                new_seed.dv_dx = 0.0;
+                                new_seed.dv_dy = 0.0;
+                                new_seed.corrcoef = 0.0;
+                                updated_seeds.push_back(new_seed);
+                            }
+                        }
+                    }
+                    if (!updated_seeds.empty()) {
+                        current_seeds = updated_seeds;
+                        current_seeds_optimized = false;  // Seeds need re-optimization with new reference
+                        std::cout << "  Seeds propagated: " << updated_seeds.size() << "/" << seeds_by_region.size() << " remain in updated ROI." << std::endl;
+                    } else {
+                        std::cerr << "  WARNING: No seeds remain in updated ROI. Clearing seeds (auto-detect will be used)." << std::endl;
+                        current_seeds.clear();
+                    }
+                }
                 
                 // Check if updated ROI is empty and warn/handle
                 if (roi_ref.get_points() == 0) {
@@ -2835,6 +2892,8 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input)
                     // Revert to previous ROI to prevent crash in subsequent analysis
                     roi_ref = prev_roi;
                     ref_idx = prev_ref_idx;  // Keep previous reference
+                    current_seeds = seeds_by_region;  // Revert seeds too
+                    current_seeds_optimized = seeds_are_optimized;
                     std::cerr << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis." << std::endl;
                 }
                 
@@ -2930,15 +2989,16 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
         std::cout << "Using POST_PROCESS (MATLAB-style) accumulation mode." << std::endl;
     }
             
-    ROI2D roi_ref = DIC_input.roi; 
+    ROI2D roi_ref = DIC_input.roi;
+    // Mutable copy of seeds so we can propagate them when ROI updates
+    std::vector<SeedParams> current_seeds = parallel_input.seeds_by_region;
+    bool current_seeds_optimized = parallel_input.seeds_are_optimized;
     for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
         std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
         std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
         std::cout << "Current image: " << DIC_input.imgs[cur_idx] << "." << std::endl;
         
         std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
-        
-        const std::vector<SeedParams>& seeds = (cur_idx == 1) ? parallel_input.seeds_by_region : std::vector<SeedParams>{};
         
         auto disps = RGDIC_without_thread(DIC_input.imgs[ref_idx].get_gs(), 
                                DIC_input.imgs[cur_idx].get_gs(), 
@@ -2949,8 +3009,8 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
                                DIC_input.r, 
                                DIC_input.cutoff_corrcoef,
                                DIC_input.debug,
-                               seeds,
-                               parallel_input.seeds_are_optimized);
+                               current_seeds,
+                               current_seeds_optimized);
         
         std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
@@ -2981,21 +3041,68 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
             std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
             if (selected_corrcoef > DIC_input.update_corrcoef) {
-                std::cout << "Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
+                std::cout << "DASP::Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
                 auto prev_ref_idx = ref_idx;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
                 auto prev_roi = roi_ref;
                 roi_ref = update(prev_roi, use_post_process ? disps : DIC_output.disps[cur_idx-1], DIC_input.interp_type, DIC_input.roi_update_mode);
                 
+                // Update seeds according to the ROI change:
+                // Move each seed based on last displacement, snap to grid, validate in new ROI
+                if (!current_seeds.empty()) {
+                    const auto& disp_for_seeds = use_post_process ? disps : DIC_output.disps[cur_idx-1];
+                    const auto& u_arr = disp_for_seeds.get_u().get_array();
+                    const auto& v_arr = disp_for_seeds.get_v().get_array();
+                    difference_type sf = DIC_input.scalefactor;
+                    std::vector<SeedParams> updated_seeds;
+                    updated_seeds.reserve(current_seeds.size());
+                    for (const auto& seed : current_seeds) {
+                        difference_type ry = seed.y / sf;
+                        difference_type rx = seed.x / sf;
+                        if (ry >= 0 && ry < u_arr.height() && rx >= 0 && rx < u_arr.width()) {
+                            double du = u_arr(ry, rx) * sf;
+                            double dv = v_arr(ry, rx) * sf;
+                            difference_type new_x = seed.x + static_cast<difference_type>(std::round(du / sf) * sf);
+                            difference_type new_y = seed.y + static_cast<difference_type>(std::round(dv / sf) * sf);
+                            difference_type nry = new_y / sf;
+                            difference_type nrx = new_x / sf;
+                            const auto& new_mask = roi_ref.get_mask();
+                            if (nry >= 0 && nry < new_mask.height() && nrx >= 0 && nrx < new_mask.width() && new_mask(nry, nrx)) {
+                                SeedParams new_seed;
+                                new_seed.x = new_x;
+                                new_seed.y = new_y;
+                                new_seed.u = 0.0;
+                                new_seed.v = 0.0;
+                                new_seed.du_dx = 0.0;
+                                new_seed.du_dy = 0.0;
+                                new_seed.dv_dx = 0.0;
+                                new_seed.dv_dy = 0.0;
+                                new_seed.corrcoef = 0.0;
+                                updated_seeds.push_back(new_seed);
+                            }
+                        }
+                    }
+                    if (!updated_seeds.empty()) {
+                        current_seeds = updated_seeds;
+                        current_seeds_optimized = false;
+                        std::cout << "  Seeds propagated: " << updated_seeds.size() << "/" << parallel_input.seeds_by_region.size() << " remain in updated ROI." << std::endl;
+                    } else {
+                        std::cerr << "  WARNING: No seeds remain in updated ROI. Clearing seeds (auto-detect will be used)." << std::endl;
+                        current_seeds.clear();
+                    }
+                }
+                
                 // Check if updated ROI is empty and warn/handle
                 if (roi_ref.get_points() == 0) {
                     std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
                     std::cerr << "  Previous ROI had " << prev_roi.get_points() << " points." << std::endl;
                     std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
-                    // Revert to previous ROI to prevent crash in subsequent analysis
+                    // Revert to previous ROI and seeds to prevent crash
                     roi_ref = prev_roi;
-                    ref_idx = prev_ref_idx;  // Keep previous reference
+                    ref_idx = prev_ref_idx;
+                    current_seeds = parallel_input.seeds_by_region;
+                    current_seeds_optimized = parallel_input.seeds_are_optimized;
                     std::cerr << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis." << std::endl;
                 }
                 
@@ -4219,15 +4326,17 @@ Disp2D compute_displacements(
     Array2D<double> params_buf(10, 1); // buffer for nloptimizer
     
     // Get seed params for queue
+    // Must match SeedParams::to_array() convention:
+    // params = {p1(y), p2(x), v, u, dv_dp1(dv_dy), dv_dp2(dv_dx), du_dp1(du_dy), du_dp2(du_dx), corr_coef, diff_norm}
     Array2D<double> seed_params(10, 1);
-    seed_params(0) = seedparams.x;
-    seed_params(1) = seedparams.y;
+    seed_params(0) = seedparams.y;      // p1 (row)
+    seed_params(1) = seedparams.x;      // p2 (col)
     seed_params(2) = seedparams.v;
     seed_params(3) = seedparams.u;
-    seed_params(4) = seedparams.dv_dx;
-    seed_params(5) = seedparams.dv_dy;
-    seed_params(6) = seedparams.du_dx;
-    seed_params(7) = seedparams.du_dy;
+    seed_params(4) = seedparams.dv_dy;  // dv_dp1
+    seed_params(5) = seedparams.dv_dx;  // dv_dp2
+    seed_params(6) = seedparams.du_dy;  // du_dp1
+    seed_params(7) = seedparams.du_dx;  // du_dp2
     seed_params(8) = seedparams.corrcoef;
     seed_params(9) = 0;
     
@@ -4601,24 +4710,40 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
         // Use precomputed seed data for this frame
         const auto& frame_data = seed_data[i];
         const auto& roi_for_frame = frame_data.roi;
-        const auto& seed_params_for_frame = frame_data.seed_params_by_region[0];  // Using first region
         const auto& sr_nloptimizer_for_frame = frame_data.sr_nloptimizer;
         
-        // Compute displacements using precomputed seed parameters
-        auto disps = compute_displacements(
-            sr_nloptimizer_for_frame,
-            roi_for_frame.reduce(DIC_input.scalefactor),
-            seed_params_for_frame,
-            DIC_input.scalefactor,
-            DIC_input.cutoff_corrcoef,
-            0,  // region_idx
-            DIC_input.debug
-        );
+        // Safety check: ensure seed_params_by_region is not empty
+        if (frame_data.seed_params_by_region.empty()) {
+            #pragma omp critical
+            {
+                std::cerr << "  WARNING: No seed params for frame " << frame_idx << ", skipping." << std::endl;
+            }
+            continue;
+        }
+        const auto& seed_params_for_frame = frame_data.seed_params_by_region[0];
         
-        // Store displacement
-        #pragma omp critical
-        {
-            DIC_output.disps[frame_idx - 1] = disps;
+        try {
+            // Compute displacements using precomputed seed parameters
+            auto disps = compute_displacements(
+                sr_nloptimizer_for_frame,
+                roi_for_frame.reduce(DIC_input.scalefactor),
+                seed_params_for_frame,
+                DIC_input.scalefactor,
+                DIC_input.cutoff_corrcoef,
+                0,  // region_idx
+                DIC_input.debug
+            );
+            
+            // Store displacement
+            #pragma omp critical
+            {
+                DIC_output.disps[frame_idx - 1] = disps;
+            }
+        } catch (const std::exception& e) {
+            #pragma omp critical
+            {
+                std::cerr << "  ERROR: Frame " << frame_idx << " failed: " << e.what() << std::endl;
+            }
         }
     }
     
