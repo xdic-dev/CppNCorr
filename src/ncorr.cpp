@@ -2070,6 +2070,7 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
                 
                 if (seeds_are_optimized) {
                     // Seeds are already optimized - use directly without optimization
+                    std::cout << "DEBUG::Already Optimized seed: " << provided_seed.y << " " << provided_seed.x << std::endl;
                     seed_params = provided_seed.to_array();
                 } else {
                     // Seeds need optimization - create seed array and optimize
