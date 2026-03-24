@@ -6,6 +6,7 @@
  */
 
 #include "ncorr.h"
+#include <iostream>
 #include <omp.h>
 #include <thread>
 
@@ -2094,9 +2095,14 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
                     auto result = sr_nloptimizer(params_buf);
                     if (result.second) {  // converged successfully
                         seed_params = result.first;
+                        if (debug) {
+                            std::cout << "DEBUG::Optimized seed: " << seed_params(0) << " " << seed_params(1) << std::endl;
+                        }
+
+                    } else {
+                        std::cerr << "Warning - Seed optimization doesn't converge. Use non optimized seed" << std::endl;
                     }
                     // If optimization failed, seed_params remains empty
-                    std::cout << "DEBUG::Optimized seed: " << seed_params(0) << " " << seed_params(1) << std::endl;
                 }
             }
         } else {
@@ -2143,7 +2149,7 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
     }
     
     // Debugging stuff -------------------------------------------------------//    
-    if (debug) {
+    if (false && debug) {
         // These debugging tools are displayed during the RGDIC calculation and 
         // give real-time updates to help assist with analysis.
         
@@ -2788,6 +2794,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
         
         std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
         
+        std::cout << "Debug:: " << current_seeds[0].x << " " << current_seeds[0].y << std::endl;
         auto disps = RGDIC_without_thread(DIC_input.imgs[ref_idx].get_gs(), 
                                DIC_input.imgs[cur_idx].get_gs(), 
                                roi_ref, 
