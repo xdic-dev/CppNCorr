@@ -459,6 +459,10 @@ struct DIC_analysis_parallel_input final {
 // Parallel DIC analysis using seed-based failure prediction
 DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input&);
 
+// Matlab-ABR-style DIC analysis using a fixed reference, manual/preset seeds,
+// seed-analysis first, then DIC evaluation.
+DIC_analysis_output matlab_DIC_analysis_parallel(const DIC_analysis_parallel_input&);
+
 // Sequential DIC analysis with user-provided seeds
 DIC_analysis_output DIC_analysis_sequential(
     const DIC_analysis_input& DIC_input,
@@ -467,6 +471,15 @@ DIC_analysis_output DIC_analysis_sequential(
 );
 
 DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input&);
+
+// Sequential Matlab-ABR-style DIC analysis with user-provided seeds.
+DIC_analysis_output matlab_DIC_analysis_sequential(
+    const DIC_analysis_input& DIC_input,
+    const std::vector<SeedParams>& seeds_by_region = {},
+    bool seeds_are_optimized = false
+);
+
+DIC_analysis_output matlab_DIC_analysis_sequential(const DIC_analysis_parallel_input&);
 
 // RGDIC with user-provided seeds (single frame pair)
 Disp2D RGDIC_with_seeds(const Array2D<double>& A_ref, 
