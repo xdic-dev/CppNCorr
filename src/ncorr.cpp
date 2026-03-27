@@ -4640,6 +4640,11 @@ namespace {
 
 using matlab_difference_type = ROI2D::difference_type;
 
+struct matlab_seed_frame_result final {
+    std::vector<SeedParams> optimized_seeds;
+    bool success = false;
+};
+
 Array2D<double> matlab_make_seed_params_init(const SeedParams& seed) {
     Array2D<double> params_init(10, 1);
     params_init(0) = seed.y;
@@ -4653,6 +4658,15 @@ Array2D<double> matlab_make_seed_params_init(const SeedParams& seed) {
     params_init(8) = 0.0;
     params_init(9) = 0.0;
     return params_init;
+}
+
+bool matlab_seed_is_in_bounds(const Array2D<double>& A_ref,
+                              const SeedParams& seed,
+                              matlab_difference_type radius) {
+    return seed.x >= radius &&
+           seed.y >= radius &&
+           seed.x < A_ref.width() - radius &&
+           seed.y < A_ref.height() - radius;
 }
 
 bool matlab_seed_matches_region(const ROI2D& roi_reduced,
@@ -4703,6 +4717,99 @@ std::vector<SeedParams> matlab_propagate_seeds(const std::vector<SeedParams>& se
     return propagated_seeds;
 }
 
+std::pair<Array2D<double>, bool> matlab_calc_seed_point(
+    const details::subregion_nloptimizer& sr_nloptimizer,
+    const SeedParams& predicted_seed,
+    bool debug,
+    matlab_difference_type region_idx,
+    matlab_difference_type cur_idx
+) {
+    auto params_init = matlab_make_seed_params_init(predicted_seed);
+    auto result_pair = sr_nloptimizer.global(params_init);
+    if (!result_pair.second && debug) {
+        std::cout << "matlab_DIC_analysis: seed solve failed for region "
+                  << region_idx << " at frame " << cur_idx << "." << std::endl;
+    }
+    return {Array2D<double>(result_pair.first), result_pair.second};
+}
+
+matlab_seed_frame_result matlab_analyze_seed_frame(
+    const DIC_analysis_parallel_input& input,
+    const Array2D<double>& A_ref,
+    const std::vector<SeedParams>& predicted_seeds,
+    matlab_difference_type cur_idx
+) {
+    matlab_seed_frame_result frame_result;
+    const auto& DIC_input = input.base_input;
+    const auto roi_reduced = DIC_input.roi.reduce(DIC_input.scalefactor);
+
+    if (!matlab_seed_positions_are_unique(predicted_seeds, DIC_input.scalefactor)) {
+        if (DIC_input.debug) {
+            std::cout << "matlab_DIC_analysis: duplicate reduced-grid seeds before frame "
+                      << cur_idx << "." << std::endl;
+        }
+        return frame_result;
+    }
+
+    auto sr_nloptimizer = details::subregion_nloptimizer(
+        A_ref,
+        DIC_input.imgs[cur_idx].get_gs(),
+        DIC_input.roi,
+        DIC_input.scalefactor,
+        DIC_input.interp_type,
+        DIC_input.subregion_type,
+        DIC_input.r
+    );
+
+    frame_result.optimized_seeds.reserve(predicted_seeds.size());
+    for (matlab_difference_type region_idx = 0;
+         region_idx < matlab_difference_type(predicted_seeds.size());
+         ++region_idx) {
+        const auto& predicted_seed = predicted_seeds[region_idx];
+        if (!matlab_seed_is_in_bounds(A_ref, predicted_seed, DIC_input.r) ||
+            !DIC_input.roi.get_mask()(predicted_seed.y, predicted_seed.x) ||
+            !matlab_seed_matches_region(roi_reduced, predicted_seed, DIC_input.scalefactor, region_idx)) {
+            if (DIC_input.debug) {
+                std::cout << "matlab_DIC_analysis: invalid predicted seed for region "
+                          << region_idx << " at frame " << cur_idx << "." << std::endl;
+            }
+            return frame_result;
+        }
+
+        const auto result_pair = matlab_calc_seed_point(
+            sr_nloptimizer,
+            predicted_seed,
+            DIC_input.debug,
+            region_idx,
+            cur_idx
+        );
+        if (!result_pair.second) {
+            return frame_result;
+        }
+
+        SeedParams optimized_seed = SeedParams::from_array(result_pair.first);
+        const double diffnorm = result_pair.first(9);
+        if (optimized_seed.corrcoef > input.cutoff_max_corrcoef ||
+            diffnorm > input.cutoff_max_diffnorm ||
+            !matlab_seed_matches_region(roi_reduced, optimized_seed, DIC_input.scalefactor, region_idx)) {
+            if (DIC_input.debug) {
+                std::cout << "matlab_DIC_analysis: seed quality failed for region "
+                          << region_idx << " at frame " << cur_idx
+                          << " corrcoef=" << optimized_seed.corrcoef
+                          << " diffnorm=" << diffnorm << "." << std::endl;
+            }
+            return frame_result;
+        }
+
+        frame_result.optimized_seeds.push_back(optimized_seed);
+    }
+
+    frame_result.success =
+        matlab_difference_type(frame_result.optimized_seeds.size()) == matlab_difference_type(predicted_seeds.size()) &&
+        matlab_seed_positions_are_unique(frame_result.optimized_seeds, DIC_input.scalefactor);
+    return frame_result;
+}
+
 std::vector<std::vector<SeedParams>> matlab_compute_seed_schedule(const DIC_analysis_parallel_input& input) {
     typedef ROI2D::difference_type difference_type;
 
@@ -4719,9 +4826,10 @@ std::vector<std::vector<SeedParams>> matlab_compute_seed_schedule(const DIC_anal
         throw std::invalid_argument("matlab_DIC_analysis requires seeds_by_region.size() to match the number of ROI regions.");
     }
 
-    std::vector<SeedParams> predicted_seeds = input.seeds_are_optimized ?
-        matlab_propagate_seeds(input.seeds_by_region, DIC_input.scalefactor) :
-        input.seeds_by_region;
+    // Matlab ABR seed analysis starts from one seed position per region on the
+    // fixed reference image, then propagates positions only after a
+    // successful frame. Do not pre-propagate the user input.
+    std::vector<SeedParams> predicted_seeds = input.seeds_by_region;
 
     if (!matlab_seed_positions_are_unique(predicted_seeds, DIC_input.scalefactor)) {
         throw std::invalid_argument("matlab_DIC_analysis received duplicate seed positions on the reduced grid.");
@@ -4732,81 +4840,17 @@ std::vector<std::vector<SeedParams>> matlab_compute_seed_schedule(const DIC_anal
 
     const auto& A_ref = DIC_input.imgs[0].get_gs();
     for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
-        auto sr_nloptimizer = details::subregion_nloptimizer(
-            A_ref,
-            DIC_input.imgs[cur_idx].get_gs(),
-            DIC_input.roi,
-            DIC_input.scalefactor,
-            DIC_input.interp_type,
-            DIC_input.subregion_type,
-            DIC_input.r
-        );
-
-        std::vector<SeedParams> optimized_seeds;
-        optimized_seeds.reserve(predicted_seeds.size());
-        bool frame_success = matlab_seed_positions_are_unique(predicted_seeds, DIC_input.scalefactor);
-
-        for (difference_type region_idx = 0;
-             frame_success && region_idx < difference_type(predicted_seeds.size());
-             ++region_idx) {
-            const auto& predicted_seed = predicted_seeds[region_idx];
-            if (!matlab_seed_matches_region(roi_reduced, predicted_seed, DIC_input.scalefactor, region_idx)) {
-                if (DIC_input.debug) {
-                    std::cout << "matlab_DIC_analysis: seed for region " << region_idx
-                              << " is outside its ROI at frame " << cur_idx << "." << std::endl;
-                }
-                frame_success = false;
-                break;
-            }
-
-            auto params_init = matlab_make_seed_params_init(predicted_seed);
-            auto global_result = sr_nloptimizer.global(params_init);
-            if (!global_result.second) {
-                if (DIC_input.debug) {
-                    std::cout << "matlab_DIC_analysis: global seed optimization failed for region "
-                              << region_idx << " at frame " << cur_idx << "." << std::endl;
-                }
-                frame_success = false;
-                break;
-            }
-
-            auto iter_result = sr_nloptimizer(global_result.first);
-            if (!iter_result.second) {
-                if (DIC_input.debug) {
-                    std::cout << "matlab_DIC_analysis: iterative seed optimization failed for region "
-                              << region_idx << " at frame " << cur_idx << "." << std::endl;
-                }
-                frame_success = false;
-                break;
-            }
-
-            SeedParams optimized_seed = SeedParams::from_array(iter_result.first);
-            const double diffnorm = iter_result.first(9);
-            if (optimized_seed.corrcoef > input.cutoff_max_corrcoef ||
-                diffnorm > input.cutoff_max_diffnorm ||
-                !matlab_seed_matches_region(roi_reduced, optimized_seed, DIC_input.scalefactor, region_idx)) {
-                if (DIC_input.debug) {
-                    std::cout << "matlab_DIC_analysis: seed quality failed for region " << region_idx
-                              << " at frame " << cur_idx
-                              << " corrcoef=" << optimized_seed.corrcoef
-                              << " diffnorm=" << diffnorm << "." << std::endl;
-                }
-                frame_success = false;
-                break;
-            }
-
-            optimized_seeds.push_back(optimized_seed);
-        }
-
-        if (!frame_success || !matlab_seed_positions_are_unique(optimized_seeds, DIC_input.scalefactor)) {
+        const auto frame_result = matlab_analyze_seed_frame(input, A_ref, predicted_seeds, cur_idx);
+        if (!frame_result.success) {
             if (DIC_input.debug) {
-                std::cout << "matlab_DIC_analysis: stopping seed schedule at frame " << cur_idx << "." << std::endl;
+                std::cout << "matlab_DIC_analysis: stopping seed schedule at frame "
+                          << cur_idx << "." << std::endl;
             }
             break;
         }
 
-        seeds_by_frame.push_back(optimized_seeds);
-        predicted_seeds = matlab_propagate_seeds(optimized_seeds, DIC_input.scalefactor);
+        seeds_by_frame.push_back(frame_result.optimized_seeds);
+        predicted_seeds = matlab_propagate_seeds(frame_result.optimized_seeds, DIC_input.scalefactor);
     }
 
     return seeds_by_frame;
