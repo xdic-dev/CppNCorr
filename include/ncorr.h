@@ -157,6 +157,7 @@ enum class ROI_UPDATE_MODE { SKIP_ALL, SKIP_INVALID };
 enum class ACCUMULATION_MODE { ON_THE_FLY, POST_PROCESS };
 
 ROI2D update(const ROI2D&, const Disp2D&, INTERP, ROI_UPDATE_MODE mode = ROI_UPDATE_MODE::SKIP_ALL);
+ROI2D matlab_update_roi(const ROI2D&, const Disp2D&, INTERP, ROI2D::difference_type radius);
 
 Data2D update(const Data2D&, const Disp2D&, INTERP, ROI_UPDATE_MODE mode = ROI_UPDATE_MODE::SKIP_ALL);
 

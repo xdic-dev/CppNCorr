@@ -742,6 +742,117 @@ ROI2D update(const ROI2D &roi, const Disp2D &disp, INTERP interp_type, ROI_UPDAT
     return ROI2D(std::move(boundaries_updated), roi.height(), roi.width());
 }
 
+namespace details {
+    Array2D<double> matlab_update_boundary(const Array2D<double>& boundary,
+                                          const Disp2D::nlinfo_interpolator& disp_interp,
+                                          const ROI2D::difference_type roi_scalefactor,
+                                          const ROI2D::difference_type size_mask_height,
+                                          const ROI2D::difference_type size_mask_width,
+                                          const ROI2D::difference_type radius) {
+        typedef ROI2D::difference_type difference_type;
+
+        if (boundary.height() == 0) {
+            return Array2D<double>(0, 2);
+        }
+
+        std::vector<std::pair<double, double>> valid_points;
+        valid_points.reserve(boundary.height());
+
+        for (difference_type idx = 0; idx < boundary.height(); ++idx) {
+            const double p1 = boundary(idx, 0) * roi_scalefactor;
+            const double p2 = boundary(idx, 1) * roi_scalefactor;
+            const auto disp_pair = disp_interp(p1, p2);
+
+            if (std::isnan(disp_pair.first) || std::isnan(disp_pair.second)) {
+                continue;
+            }
+
+            const double new_p1 = boundary(idx, 0) + disp_pair.first / roi_scalefactor;
+            const double new_p2 = boundary(idx, 1) + disp_pair.second / roi_scalefactor;
+
+            if (new_p1 < radius || new_p1 > size_mask_height - radius ||
+                new_p2 < radius || new_p2 > size_mask_width - radius) {
+                continue;
+            }
+
+            valid_points.emplace_back(new_p1, new_p2);
+        }
+
+        if (valid_points.empty()) {
+            return Array2D<double>(0, 2);
+        }
+
+        Array2D<double> boundary_updated(valid_points.size(), 2);
+        for (difference_type idx = 0; idx < difference_type(valid_points.size()); ++idx) {
+            boundary_updated(idx, 0) = valid_points[idx].first;
+            boundary_updated(idx, 1) = valid_points[idx].second;
+        }
+
+        return boundary_updated;
+    }
+}
+
+ROI2D matlab_update_roi(const ROI2D& roi,
+                        const Disp2D& disp,
+                        INTERP interp_type,
+                        ROI2D::difference_type radius) {
+    typedef ROI2D::difference_type difference_type;
+
+    if (roi.size_regions() != disp.get_roi().size_regions()) {
+        throw std::invalid_argument("Attempted to matlab_update_roi with ROI2D regions: " +
+                                    std::to_string(roi.size_regions()) + " and Disp2D regions: " +
+                                    std::to_string(disp.get_roi().size_regions()) + ".");
+    }
+
+    difference_type roi_scalefactor;
+    if (roi.height() == disp.data_height() && roi.width() == disp.data_width()) {
+        roi_scalefactor = disp.get_scalefactor();
+    } else if (std::ceil(double(roi.height()) / disp.get_scalefactor()) == disp.data_height() &&
+               std::ceil(double(roi.width()) / disp.get_scalefactor()) == disp.data_width()) {
+        roi_scalefactor = 1;
+    } else {
+        throw std::invalid_argument("Attempted to matlab_update_roi with ROI2D size of: " + roi.size_2D_string() +
+                                    " and Disp2D data size of: " + disp.size_2D_string() +
+                                    " and scale factor of: " + std::to_string(disp.get_scalefactor()) + ".");
+    }
+
+    std::vector<ROI2D::region_boundary> boundaries_updated(roi.size_regions());
+    for (difference_type region_idx = 0; region_idx < roi.size_regions(); ++region_idx) {
+        if (disp.get_roi().get_nlinfo(region_idx).empty()) {
+            continue;
+        }
+
+        const auto disp_interp = disp.get_nlinfo_interpolator(region_idx, interp_type);
+        const auto& boundary = roi.get_boundary(region_idx);
+
+        ROI2D::region_boundary boundary_updated;
+        boundary_updated.add = details::matlab_update_boundary(
+            boundary.add,
+            disp_interp,
+            roi_scalefactor,
+            roi.height(),
+            roi.width(),
+            radius
+        );
+
+        boundary_updated.sub.reserve(boundary.sub.size());
+        for (const auto& sub_boundary : boundary.sub) {
+            boundary_updated.sub.emplace_back(details::matlab_update_boundary(
+                sub_boundary,
+                disp_interp,
+                roi_scalefactor,
+                roi.height(),
+                roi.width(),
+                radius
+            ));
+        }
+
+        boundaries_updated[region_idx] = std::move(boundary_updated);
+    }
+
+    return ROI2D(std::move(boundaries_updated), roi.height(), roi.width());
+}
+
 namespace details {          
     Array2D<ROI2D::difference_type>& get_nlinfo_SDA(Array2D<ROI2D::difference_type> &SDA, const ROI2D::region_nlinfo &nlinfo, Array2D<bool> &mask_buf, Array2D<bool> &mask_buf_new) {
         typedef ROI2D::difference_type                          difference_type;
@@ -4934,7 +5045,7 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
         for (difference_type frame_idx = 0; frame_idx < difference_type(segment_disps.size()); ++frame_idx) {
             const difference_type cur_idx = ref_idx + frame_idx + 1;
             DIC_output.disps[cur_idx - 1] = segment_disps[frame_idx];
-            next_roi_ref = update(roi_ref, segment_disps[frame_idx], DIC_input.interp_type, DIC_input.roi_update_mode);
+            next_roi_ref = matlab_update_roi(roi_ref, segment_disps[frame_idx], DIC_input.interp_type, DIC_input.r);
 
             if (DIC_input.save_disps_steps) {
                 step_disps[cur_idx - 1] = segment_disps[frame_idx];
