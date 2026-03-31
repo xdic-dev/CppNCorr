@@ -91,7 +91,7 @@ namespace details {
             typedef nloptimizer_base::coords                             coords;
                         
             // Rule of 5 and destructor --------------------------------------//
-            subregion_nloptimizer() noexcept : scalefactor(), ref_template_avg(), ref_template_ssd_inv() { }
+            subregion_nloptimizer() noexcept : scalefactor(), ref_template_avg(), ref_template_ssd_inv(), last_iteration_count(0) { }
             subregion_nloptimizer(const subregion_nloptimizer&) = default;
             subregion_nloptimizer(subregion_nloptimizer&&) = default;
             subregion_nloptimizer& operator=(const subregion_nloptimizer&) = default;  
@@ -100,6 +100,7 @@ namespace details {
 
             // getters -------------------------------------------------------//
             const ROI2D::contig_subregion_generator& get_subregion_gen() const { return this->subregion_gen; }
+            int get_last_iteration_count() const { return last_iteration_count; }
             
             
             // Additional Constructors ---------------------------------------//         
@@ -137,6 +138,8 @@ namespace details {
             mutable Array2D<double>::linsolver hess_linsolver;         // Have copy 
             // Cur template buffer
             mutable Array2D<double> A_cur_template;                    // Have copy 
+            // Iteration tracking for MATLAB-style saturation check
+            mutable int last_iteration_count;                          // Track actual iterations
     };        
 }
 

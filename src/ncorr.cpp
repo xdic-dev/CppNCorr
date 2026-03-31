@@ -322,6 +322,9 @@ namespace details {
     bool subregion_nloptimizer::iterative_search() const {       
         // Note: params = {p1, p2, v, u, dv_dp1, dv_dp2, du_dp1, du_dp2, corr_coef, diff_norm}
         
+        // Reset iteration counter for MATLAB-style saturation check
+        last_iteration_count = 0;
+        
         // Get nlinfo for input p1 and p2 - note that initial guess may have not
         // been called before iterative_search(), so recalculate subregion.
         const auto &subregion_nlinfo = subregion_gen(std::round(params(0)), std::round(params(1)));
@@ -443,8 +446,10 @@ namespace details {
             if (hess_linsolver) {
                 // Note: params = {p1, p2, v, u, dv_dp1, dv_dp2, du_dp1, du_dp2, corr_coef, diff_norm}                                
                 bool success = newton(); // Initial iteration - always perform at least 1
+                last_iteration_count = 1;
                 for (difference_type counter = 1; success && params(9) > cutoff_norm && counter < cutoff_iterations; ++counter) { 
                     success = newton();
+                    last_iteration_count = counter + 1;
                 }                      
                 
                 return success;
@@ -715,8 +720,7 @@ ROI2D update(const ROI2D &roi, const Disp2D &disp, INTERP interp_type, ROI_UPDAT
         // Form new boundary -------------------------------------------------//
         ROI2D::region_boundary boundary_updated;  
         
-        if (true && mode == ROI_UPDATE_MODE::SKIP_ALL) {
-            std::cout << "Update SKIP ALL mode is used" << std::endl;
+        if (mode == ROI_UPDATE_MODE::SKIP_ALL) {
             // Original behavior: fail entire boundary if any point returns NaN
             boundary_updated.add = details::update_boundary_skip_all(boundary.add, disp_interp, roi_scalefactor);        
             
@@ -4740,7 +4744,7 @@ SeedAnalysisResult analyze_seeds(
         
         // Extract convergence metrics
         SeedConvergence convergence;
-        convergence.num_iterations = cutoff_iteration;  // Approximation
+        convergence.num_iterations = sr_nloptimizer.get_last_iteration_count();  // Actual count
         convergence.diffnorm = params_result(9);
         
         result.seeds.push_back(seed_result);
@@ -4906,14 +4910,23 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
 
             SeedParams optimized_seed = SeedParams::from_array(global_result.first);
             const double diffnorm = global_result.first(9);
+            const int num_iterations = sr_nloptimizer.get_last_iteration_count();
+            
+            // MATLAB-style checks: corrcoef, diffnorm, and iteration saturation
+            // MATLAB ncorr_abr_alg_seedanalysis.m line 85: (i > 0 && any([convergence_buffer.num_iterations] == cutoff_iteration))
+            bool iteration_saturated = (cur_idx > ref_idx + 1) && (num_iterations >= 100);  // Default cutoff_iterations = 100
+            
             if (optimized_seed.corrcoef > input.cutoff_max_corrcoef ||
                 diffnorm > input.cutoff_max_diffnorm ||
+                iteration_saturated ||
                 !matlab_seed_matches_region(roi_reduced, optimized_seed, DIC_input.scalefactor, region_idx)) {
                 if (DIC_input.debug) {
                     std::cout << "matlab_DIC_analysis: seed quality failed for region " << region_idx
                               << " at frame " << cur_idx
                               << " corrcoef=" << optimized_seed.corrcoef
-                              << " diffnorm=" << diffnorm << "." << std::endl;
+                              << " diffnorm=" << diffnorm
+                              << " iterations=" << num_iterations
+                              << " saturated=" << (iteration_saturated ? "yes" : "no") << "." << std::endl;
                 }
                 frame_success = false;
                 break;
@@ -4930,7 +4943,11 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
         }
 
         segment.seeds_by_frame.push_back(optimized_seeds);
-        predicted_seeds = matlab_propagate_seeds(optimized_seeds, DIC_input.scalefactor);
+        // NOTE: Do NOT propagate seeds within a segment.
+        // MATLAB uses the SAME fixed pos_seed for ALL frames in a segment
+        // (ncorr_abr_alg_seedanalysis.m calls ncorr_alg_calcseeds with the
+        // same pos_seed for each current image). Propagation only happens
+        // BETWEEN segments in matlab_DIC_analysis_impl.
     }
 
     if (!segment.seeds_by_frame.empty()) {
@@ -5019,7 +5036,7 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
     difference_type ref_idx = 0;
     ROI2D roi_ref = DIC_input.roi;
     std::vector<SeedParams> current_seeds = input.seeds_by_region;
-    //bool current_seeds_optimized = input.seeds_are_optimized;
+    bool current_seeds_optimized = input.seeds_are_optimized;
 
     while (ref_idx < difference_type(DIC_input.imgs.size()) - 1) {
         const auto segment = matlab_compute_seed_segment(
@@ -5027,7 +5044,7 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
             ref_idx,
             roi_ref,
             current_seeds,
-            false//current_seeds_optimized
+            current_seeds_optimized
         );
 
         if (segment.seeds_by_frame.empty()) {
@@ -5068,7 +5085,7 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
 
         roi_ref = next_roi_ref;
         current_seeds = segment.terminal_seeds;
-        //current_seeds_optimized = true;
+        current_seeds_optimized = true;
     }
 
     if (DIC_input.save_disps_steps && !step_disps.empty()) {
