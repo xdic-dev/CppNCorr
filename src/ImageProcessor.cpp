@@ -1,8 +1,8 @@
 #include "ImageProcessor.h"
+#include "ncorr/internal/diagnostics.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 #include <limits>
 #include <vector>
 
@@ -158,7 +158,12 @@ ImageProcessor::filter_like_ben(const std::vector<cv::Mat>& input,
 
     if (gs_boundaries == nullptr) {
         boundaries = compute_percentile_boundaries(filtered_images[0], mask, 5.0, 95.0);
-        std::cout << "  Computed filter boundaries: [" << boundaries.first << ", " << boundaries.second << "]" << std::endl;
+        details::diagnostic_log(std::cout,
+                                "  Computed filter boundaries: [",
+                                boundaries.first,
+                                ", ",
+                                boundaries.second,
+                                "]");
     } else {
         boundaries = *gs_boundaries;
     }
@@ -222,7 +227,7 @@ std::pair<double, double> ImageProcessor::compute_percentile_boundaries(const cv
     }
 
     if (values.empty()) {
-        std::cerr << "Warning: No pixels in mask for percentile computation" << std::endl;
+        details::diagnostic_log(std::cerr, "Warning: No pixels in mask for percentile computation");
         return {0.0, 255.0};
     }
 

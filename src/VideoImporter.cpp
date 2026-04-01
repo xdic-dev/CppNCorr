@@ -1,8 +1,8 @@
 #include "VideoImporter.h"
+#include "ncorr/internal/diagnostics.hpp"
 
 #include <filesystem>
 #include <iomanip>
-#include <iostream>
 #include <sstream>
 #include <vector>
 
@@ -56,7 +56,7 @@ std::vector<Image2D> VideoImporter::import_video(
 
     cv::VideoCapture cap(video_path);
     if (!cap.isOpened()) {
-        std::cerr << "Failed to open video file: " << video_path << std::endl;
+        details::diagnostic_log(std::cerr, "Failed to open video file: ", video_path);
         return images;
     }
 
@@ -65,9 +65,16 @@ std::vector<Image2D> VideoImporter::import_video(
     const int frame_end = (params.frame_end < 0) ? total_frames : std::min(params.frame_end, total_frames);
     const int frame_jump = std::max(1, params.frame_jump);
 
-    std::cout << "Importing video: " << video_path << std::endl;
-    std::cout << "  Total frames: " << total_frames << std::endl;
-    std::cout << "  Import range: " << frame_start << " to " << frame_end << " (step " << frame_jump << ")" << std::endl;
+    details::diagnostic_log(std::cout, "Importing video: ", video_path);
+    details::diagnostic_log(std::cout, "  Total frames: ", total_frames);
+    details::diagnostic_log(std::cout,
+                            "  Import range: ",
+                            frame_start,
+                            " to ",
+                            frame_end,
+                            " (step ",
+                            frame_jump,
+                            ")");
 
     int imported_count = 0;
     for (int f = frame_start; f <= frame_end; f += frame_jump) {
@@ -75,7 +82,7 @@ std::vector<Image2D> VideoImporter::import_video(
 
         cv::Mat frame;
         if (!cap.read(frame)) {
-            std::cerr << "  Warning: Failed to read frame " << f << std::endl;
+            details::diagnostic_log(std::cerr, "  Warning: Failed to read frame ", f);
             break;
         }
 
@@ -92,7 +99,7 @@ std::vector<Image2D> VideoImporter::import_video(
     }
 
     cap.release();
-    std::cout << "  Imported " << imported_count << " frames" << std::endl;
+    details::diagnostic_log(std::cout, "  Imported ", imported_count, " frames");
 
     return images;
 }
@@ -109,7 +116,7 @@ std::vector<Image2D> VideoImporter::import_video_to_files(
 
     cv::VideoCapture cap(video_path);
     if (!cap.isOpened()) {
-        std::cerr << "Failed to open video file: " << video_path << std::endl;
+        details::diagnostic_log(std::cerr, "Failed to open video file: ", video_path);
         return images;
     }
 
@@ -118,10 +125,17 @@ std::vector<Image2D> VideoImporter::import_video_to_files(
     const int frame_end = (params.frame_end < 0) ? total_frames : std::min(params.frame_end, total_frames);
     const int frame_jump = std::max(1, params.frame_jump);
 
-    std::cout << "Importing video to files: " << video_path << std::endl;
-    std::cout << "  Output directory: " << output_dir << std::endl;
-    std::cout << "  Total frames: " << total_frames << std::endl;
-    std::cout << "  Import range: " << frame_start << " to " << frame_end << " (step " << frame_jump << ")" << std::endl;
+    details::diagnostic_log(std::cout, "Importing video to files: ", video_path);
+    details::diagnostic_log(std::cout, "  Output directory: ", output_dir);
+    details::diagnostic_log(std::cout, "  Total frames: ", total_frames);
+    details::diagnostic_log(std::cout,
+                            "  Import range: ",
+                            frame_start,
+                            " to ",
+                            frame_end,
+                            " (step ",
+                            frame_jump,
+                            ")");
 
     int imported_count = 0;
     for (int f = frame_start; f <= frame_end; f += frame_jump) {
@@ -129,7 +143,7 @@ std::vector<Image2D> VideoImporter::import_video_to_files(
 
         cv::Mat frame;
         if (!cap.read(frame)) {
-            std::cerr << "  Warning: Failed to read frame " << f << std::endl;
+            details::diagnostic_log(std::cerr, "  Warning: Failed to read frame ", f);
             break;
         }
 
@@ -147,7 +161,7 @@ std::vector<Image2D> VideoImporter::import_video_to_files(
     }
 
     cap.release();
-    std::cout << "  Imported and saved " << imported_count << " frames" << std::endl;
+    details::diagnostic_log(std::cout, "  Imported and saved ", imported_count, " frames");
 
     return images;
 }

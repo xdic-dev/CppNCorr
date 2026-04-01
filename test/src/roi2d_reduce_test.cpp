@@ -1,4 +1,5 @@
 #include "ncorr.h"
+#include "ncorr/internal/diagnostics.hpp"
 #include <iostream>
 #include <fstream>
 #include <iomanip>
@@ -232,16 +233,18 @@ std::pair<std::vector<ROI2D::region_nlinfo>,bool> form_nlinfos_bis(const Array2D
             continue;
         }
 
-        std::cout << "p2_sweep: " << p2_sweep << " overall_active_nodepairs:" << std::endl;
-        for (ROI2D::difference_type xxx = 0; xxx < ROI2D::difference_type(overall_nodelist(p2_sweep).size()); xxx += 2) {
-            std::cout << overall_active_nodepairs(p2_sweep)[xxx/2] << " ";
+        if (details::diagnostics_enabled()) {
+            std::cout << "p2_sweep: " << p2_sweep << " overall_active_nodepairs:" << std::endl;
+            for (ROI2D::difference_type xxx = 0; xxx < ROI2D::difference_type(overall_nodelist(p2_sweep).size()); xxx += 2) {
+                std::cout << overall_active_nodepairs(p2_sweep)[xxx/2] << " ";
+            }
+            std::cout << std::endl;
+            std::cout << "p2_sweep: " << p2_sweep << " overall_nodelist:" << std::endl;
+            for (ROI2D::difference_type xxx = 0; xxx < ROI2D::difference_type(overall_nodelist(p2_sweep).size()); xxx += 1) {
+                std::cout << overall_nodelist(p2_sweep)[xxx] << " ";
+            }
+            std::cout << std::endl;
         }
-        std::cout << std::endl;
-        std::cout << "p2_sweep: " << p2_sweep << " overall_nodelist:" << std::endl;
-        for (ROI2D::difference_type xxx = 0; xxx < ROI2D::difference_type(overall_nodelist(p2_sweep).size()); xxx += 1) {
-            std::cout << overall_nodelist(p2_sweep)[xxx] << " ";
-        }
-        std::cout << std::endl;
 
         // nlinfo_buf to be updated, then inserted into nlinfos
         ROI2D::region_nlinfo nlinfo_buf(mask.height()-1,    // Top bound of region                (this gets updated)
@@ -263,9 +266,13 @@ std::pair<std::vector<ROI2D::region_nlinfo>,bool> form_nlinfos_bis(const Array2D
         queue_np_idx.push(overall_nodelist(p2_sweep)[np_init_idx + 1]); // Bottom
         queue_np_idx.push(p2_sweep);                                    // position of nodepair
 
-        std::cout << ">> p2_sweep: " << p2_sweep << " -> Queue size: " << queue_np_idx.size() << std::endl;
-        std::cout << "Queue: ";
-        std::cout << overall_nodelist(p2_sweep)[np_init_idx] << " " << overall_nodelist(p2_sweep)[np_init_idx + 1] << " " << p2_sweep << std::endl;
+        if (details::diagnostics_enabled()) {
+            std::cout << ">> p2_sweep: " << p2_sweep << " -> Queue size: " << queue_np_idx.size() << std::endl;
+            std::cout << "Queue: ";
+            std::cout << overall_nodelist(p2_sweep)[np_init_idx] << " "
+                      << overall_nodelist(p2_sweep)[np_init_idx + 1] << " "
+                      << p2_sweep << std::endl;
+        }
         while (!queue_np_idx.empty()) {
             // Pop nodepair and its position out of queue and compare 
             // it to adjacent nodepairs (left and right of np_loaded_p2)
@@ -273,7 +280,13 @@ std::pair<std::vector<ROI2D::region_nlinfo>,bool> form_nlinfos_bis(const Array2D
             ROI2D::difference_type np_loaded_bottom = queue_np_idx.top(); queue_np_idx.pop();
             ROI2D::difference_type np_loaded_top = queue_np_idx.top(); queue_np_idx.pop();
             
-            std::cout << "Queue size: " << queue_np_idx.size() << " np_loaded_p2: " << np_loaded_p2 << " np_loaded_top: " << np_loaded_top << " np_loaded_bottom: " << np_loaded_bottom << std::endl;
+            if (details::diagnostics_enabled()) {
+                std::cout << "Queue size: " << queue_np_idx.size()
+                          << " np_loaded_p2: " << np_loaded_p2
+                          << " np_loaded_top: " << np_loaded_top
+                          << " np_loaded_bottom: " << np_loaded_bottom
+                          << std::endl;
+            }
 
             // Compare to node pairs LEFT. Any node pairs which interact are added to the queue
             add_interacting_nodes_bis(np_loaded_p2 - 1, 
@@ -283,7 +296,9 @@ std::pair<std::vector<ROI2D::region_nlinfo>,bool> form_nlinfos_bis(const Array2D
                                            overall_active_nodepairs, 
                                            queue_np_idx);
             
-            std::cout << "Queue size: " << queue_np_idx.size() << std::endl;
+            if (details::diagnostics_enabled()) {
+                std::cout << "Queue size: " << queue_np_idx.size() << std::endl;
+            }
 
             // Compare to node pairs RIGHT. Any node pairs which interact are added to the queue
             add_interacting_nodes_bis(np_loaded_p2 + 1, 
@@ -293,7 +308,9 @@ std::pair<std::vector<ROI2D::region_nlinfo>,bool> form_nlinfos_bis(const Array2D
                                            overall_active_nodepairs, 
                                            queue_np_idx);
             
-            std::cout << "Queue size: " << queue_np_idx.size() << std::endl;
+            if (details::diagnostics_enabled()) {
+                std::cout << "Queue size: " << queue_np_idx.size() << std::endl;
+            }
 
             // Update points
             nlinfo_buf.points += np_loaded_bottom - np_loaded_top + 1;
