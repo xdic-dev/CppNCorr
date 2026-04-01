@@ -18,6 +18,8 @@ SET(ncorr_src
     src/ncorr_seed.cpp
     src/ncorr_serialization.cpp
     src/ncorr_visualization.cpp
+    src/ImageProcessor.cpp
+    src/VideoImporter.cpp
     src/Strain2D.cpp
     src/Disp2D.cpp
     src/Data2D.cpp

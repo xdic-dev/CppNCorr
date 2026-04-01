@@ -12,3 +12,4 @@ test/examples/ohtcfrp/.DS_Store
 compile_commands.json
 build-test
 bin/
+.DS_Store
