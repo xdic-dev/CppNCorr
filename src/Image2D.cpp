@@ -7,6 +7,7 @@
  */
 
 #include "Image2D.h"
+#include "ncorr/io/binary_io.hpp"
 #include <filesystem>
 #include <algorithm>
 #include <numeric>
@@ -22,22 +23,9 @@ namespace ncorr {
 
 // Static factory methods ----------------------------------------------------//
 Image2D Image2D::load(std::ifstream &is) {
-    // Form empty Image2D then fill in values in accordance to how they are saved
     Image2D img;
-    
-    // Load length
-    difference_type length = 0;
-    is.read(reinterpret_cast<char*>(&length), std::streamsize(sizeof(difference_type)));
-    
-    // Allocate new string
-    img.filename_ptr = std::make_shared<std::string>(length,' ');
-        
-    // Read data
-    is.read(const_cast<char*>(img.filename_ptr->c_str()), std::streamsize(length));
-    
-    // Loaded images are always file-based
+    img.filename_ptr = std::make_shared<std::string>(io::read_string<difference_type>(is));
     img.storage_mode = StorageMode::FILE_PATH;
-    
     return img;
 }
 
@@ -121,12 +109,8 @@ bool isequal(const Image2D &img1, const Image2D &img2) {
 
 void save(const Image2D &img, std::ofstream &os) {    
     typedef Image2D::difference_type difference_type;
-    
-    // For in-memory images, we save the name but note that load() will fail
-    // unless the data has been saved to disk
-    difference_type length = img.filename_ptr->size();
-    os.write(reinterpret_cast<const char*>(&length), std::streamsize(sizeof(difference_type)));
-    os.write(img.filename_ptr->c_str(), std::streamsize(img.filename_ptr->size()));
+
+    io::write_string<difference_type>(os, *img.filename_ptr);
 }
 
 // Access --------------------------------------------------------------------//

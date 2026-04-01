@@ -13,7 +13,18 @@ option(FORCE_FETCH_DEPENDENCIES "Force using FetchContent for all dependencies" 
 # included, since the install directories are searched automatically by g++.
 
 # Set files
-SET(ncorr_src src/ncorr.cpp src/Strain2D.cpp src/Disp2D.cpp src/Data2D.cpp src/ROI2D.cpp src/Image2D.cpp src/Array2D.cpp)
+SET(ncorr_src
+    src/ncorr.cpp
+    src/ncorr_seed.cpp
+    src/ncorr_serialization.cpp
+    src/ncorr_visualization.cpp
+    src/Strain2D.cpp
+    src/Disp2D.cpp
+    src/Data2D.cpp
+    src/ROI2D.cpp
+    src/Image2D.cpp
+    src/Array2D.cpp
+)
 SET(ncorr_h include/ncorr.h include/Strain2D.h include/Disp2D.h include/Data2D.h include/ROI2D.h include/Image2D.h include/Array2D.h)
 
 # Set include directory
