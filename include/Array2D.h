@@ -25,8 +25,8 @@ extern "C" {                    // Blas - for matrix multiplication
     void dgemm_(char*, char*, int*, int*, int*, double*, double*, int*, double*, int*, double*, double*, int*); 
 }  
 #include "fftw3.h"              // For convolution and deconvolution
-#include "opencv2/opencv.hpp"   // For imshow()
-#include "suitesparse/SuiteSparseQR.hpp"    // for in-paint
+#include <opencv2/core.hpp>     // For cv::Mat and cv::DataType
+#include <opencv2/highgui.hpp>  // For imshow() and waitKey()
 
 namespace ncorr {          
 

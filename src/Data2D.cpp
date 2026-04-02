@@ -6,6 +6,7 @@
  */
 
 #include "Data2D.h"
+#include "suitesparse/SuiteSparseQR.hpp"
 
 namespace ncorr {
 

@@ -1,4 +1,5 @@
 #include "ncorr.h"
+#include "suitesparse/SuiteSparseQR.hpp"
 #include <fstream>
 #include <iostream>
 #include <iomanip>
