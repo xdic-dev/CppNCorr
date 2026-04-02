@@ -27,7 +27,7 @@ SET(ncorr_src
     src/Image2D.cpp
     src/Array2D.cpp
 )
-SET(ncorr_h include/ncorr.h include/Strain2D.h include/Disp2D.h include/Data2D.h include/ROI2D.h include/Image2D.h include/Array2D.h)
+SET(ncorr_h include/ncorr.h include/Strain2D.h include/Disp2D.h include/Data2D.h include/ROI2D.h include/Image2D.h include/Array2D.h include/Array2DOpenCV.h include/Array2DFFTW.h)
 
 # Set include directory
 INCLUDE_DIRECTORIES(include)

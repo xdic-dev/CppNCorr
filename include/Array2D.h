@@ -24,8 +24,6 @@
 extern "C" {                    // Blas - for matrix multiplication
     void dgemm_(char*, char*, int*, int*, int*, double*, double*, int*, double*, int*, double*, double*, int*); 
 }  
-#include "fftw3.h"              // For convolution and deconvolution
-
 namespace ncorr {          
 
 namespace details {       
@@ -73,6 +71,16 @@ enum class PAD { ZEROS, EXPAND_EDGES };
 // input INTERP to test for this.
 enum class INTERP { NEAREST, LINEAR, CUBIC_KEYS, CUBIC_KEYS_PRECOMPUTE, QUINTIC_BSPLINE, QUINTIC_BSPLINE_PRECOMPUTE }; 
 enum class LINSOLVER { LU, QR, CHOL };
+
+template <typename T, typename T_alloc>
+class Array2D;
+
+Array2D<double, std::allocator<double>> conv(const Array2D<double, std::allocator<double>> &A,
+                                             const Array2D<double, std::allocator<double>> &B);
+Array2D<double, std::allocator<double>> deconv(const Array2D<double, std::allocator<double>> &A,
+                                               const Array2D<double, std::allocator<double>> &B);
+Array2D<double, std::allocator<double>> xcorr(const Array2D<double, std::allocator<double>> &A,
+                                              const Array2D<double, std::allocator<double>> &B);
 
 template <typename T, typename T_alloc = std::allocator<T>> 
 class Array2D final { 
@@ -390,10 +398,6 @@ class Array2D final {
         // Matrix multiplication and convolution operations ------------------//
         // These have special overloads for double type
         friend Array2D operator*(const Array2D &A, const Array2D &B) { return A.this_mat_mult(B); }     
-        friend Array2D conv(const Array2D &A, const Array2D &B) { return A.this_conv(B); }     
-        friend Array2D deconv(const Array2D &A, const Array2D &B) { return A.this_deconv(B); }     
-        friend Array2D xcorr(const Array2D &A, const Array2D &B) { return A.this_xcorr(B); }     
-                        
         // Additional arithmetic operations ----------------------------------//
         friend value_type dot(const Array2D &x, const Array2D &y) { return x.this_dot(y); }     
         friend Array2D normalize(Array2D A) { return A.this_normalize(); } // by-value
@@ -502,16 +506,6 @@ class Array2D final {
         typename std::enable_if<std::is_same<value_type,double>::value, T_output>::type this_mat_mult(const Array2D&) const;
         template<typename T_output = Array2D> 
         typename std::enable_if<!std::is_same<value_type,double>::value, T_output>::type this_mat_mult(const Array2D&) const;        
-        
-        // Provide specific overload for double
-        template<typename T_output = Array2D> 
-        typename std::enable_if<std::is_same<value_type,double>::value, T_output>::type this_conv(const Array2D&) const;
-        template<typename T_output = Array2D> 
-        typename std::enable_if<std::is_same<value_type,double>::value, T_output>::type this_deconv(const Array2D&) const;     
-        template<typename T_output = Array2D> 
-        typename std::enable_if<std::is_same<value_type,double>::value, T_output>::type this_xcorr(const Array2D&) const;   
-        enum class FFTW { CONV, DECONV, XCORR };   
-        Array2D this_conv_base(const Array2D&, FFTW) const;
         
         // Additional arithmetic operations ----------------------------------//
         template<typename T_output = value_type> 
@@ -2539,245 +2533,6 @@ typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T
 
     return B;
 }
-
-namespace details { 
-    // -----------------------------------------------------------------------//
-    // FFTW allocator for conv function --------------------------------------//
-    // -----------------------------------------------------------------------//    
-    template <typename T> 
-    class fftw_allocator final {
-        public:
-            typedef T                                                value_type;
-            typedef T*                                                  pointer;
-            typedef const T*                                      const_pointer;
-            typedef T&                                                reference;
-            typedef const T&                                    const_reference;
-            typedef std::size_t                                       size_type;
-            typedef std::ptrdiff_t                              difference_type;
-                       
-            // Rule of 5 and destructor --------------------------------------//             
-            fftw_allocator() noexcept = default;
-            fftw_allocator(const fftw_allocator&) noexcept = default;  
-            fftw_allocator(fftw_allocator&&) noexcept = default;     
-            fftw_allocator& operator=(const fftw_allocator&) = default;
-            fftw_allocator& operator=(fftw_allocator&&) = default;   
-            ~fftw_allocator() noexcept = default;
-            
-            // Other functions -----------------------------------------------//
-            // Note that fftw_malloc and fftw_free allocate aligned double 
-            // precision arrays.
-            pointer allocate(difference_type s, const void * = 0) { 
-                pointer ptr = static_cast<pointer>(malloc_function(s * sizeof(value_type))); 
-                if (!ptr) {
-                    std::cerr << "Failed to allocate memory using allocate in fftw_allocator." << std::endl;
-                    throw std::bad_alloc();
-                }
-                
-                return ptr;
-            }
-            void deallocate(pointer ptr, difference_type) { free_function(ptr); }                                                            
-            void construct(pointer ptr, const_reference val = value_type()) { ::new((void *)ptr) value_type(val); }      
-            void destroy(pointer ptr) { ptr->~value_type(); }            
-            template<typename T2> 
-            struct rebind { typedef fftw_allocator<T2> other; };
-        
-        private:
-            // These are specialized based on the type. Input is already 
-            // converted to bytes by allocate().
-            void* malloc_function(difference_type s) { return malloc(s); }
-            void free_function(pointer ptr) { return free(ptr); }
-    };
-    // Specialize malloc_function and free_function for double. These will use
-    // fftw_malloc so SIMD instructions can be used. Input is already converted 
-    // to bytes by allocate().
-    template<>
-    inline void* fftw_allocator<double>::malloc_function(difference_type s) { return fftw_malloc(s); }
-    template<>
-    inline void fftw_allocator<double>::free_function(pointer ptr) { fftw_free(ptr); }
-    // -----------------------------------------------------------------------//
-    // -----------------------------------------------------------------------//
-    // -----------------------------------------------------------------------//  
-}
-
-template <typename T, typename T_alloc> 
-template <typename T_output> 
-typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T,T_alloc>::this_conv(const Array2D &A) const { return this_conv_base(A, FFTW::CONV); }      
-
-template <typename T, typename T_alloc> 
-template <typename T_output> 
-typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T,T_alloc>::this_deconv(const Array2D &A) const { return this_conv_base(A, FFTW::DECONV); }
-
-template <typename T, typename T_alloc> 
-template <typename T_output> 
-typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T,T_alloc>::this_xcorr(const Array2D &A) const { return this_conv_base(A, FFTW::XCORR); }      
-
-namespace details {
-    extern std::mutex fftw_mutex; // Declare fftw_mutex
-}
-template <typename T, typename T_alloc> 
-Array2D<T,T_alloc> Array2D<T,T_alloc>::this_conv_base(const Array2D &kernel, FFTW fftw_type) const {
-    using details::fftw_allocator;
-    
-    chk_kernel_size(kernel);
-    
-    // According to FFTW documentation, the only thread safe function is 
-    // fftw_execute
-    std::unique_lock<std::mutex> fftw_lock(details::fftw_mutex);
-
-    // Allocate row-major temporary buffers for FFTW simple API
-    const difference_type H = h;
-    const difference_type W = w;
-    const difference_type halfWplus1 = (W/2) + 1;
-
-    double* A_rm = static_cast<double*>(fftw_malloc(sizeof(double) * H * W));
-    double* K_rm = static_cast<double*>(fftw_malloc(sizeof(double) * H * W));
-    if (!A_rm || !K_rm) {
-        if (A_rm) fftw_free(A_rm);
-        if (K_rm) fftw_free(K_rm);
-        throw std::bad_alloc();
-    }
-    // Zero initialize
-    std::fill(A_rm, A_rm + H*W, 0.0);
-    std::fill(K_rm, K_rm + H*W, 0.0);
-
-    // Copy input array (*this) to row-major buffer
-    for (difference_type r = 0; r < H; ++r) {
-        for (difference_type c = 0; c < W; ++c) {
-            A_rm[r*W + c] = (*this)(r, c);
-        }
-    }
-
-    // Wrap kernel center to top-left into K_rm using (H,W)
-    const difference_type KH = kernel.h;
-    const difference_type KW = kernel.w;
-    const difference_type c_kh = (KH - 1) / 2;
-    const difference_type c_kw = (KW - 1) / 2;
-
-    // Q4 → top-left: kernel[c_kh: , c_kw: ] → K_rm[0:c_kh+1, 0:c_kw+1]
-    for (difference_type r = 0; r <= c_kh; ++r) {
-        for (difference_type c = 0; c <= c_kw; ++c) {
-            K_rm[r*W + c] = kernel(c_kh + r, c_kw + c);
-        }
-    }
-    // Q3 → top-right: kernel[c_kh: , :c_kw] → K_rm[0:c_kh+1, W-c_kw:W]
-    if (c_kw > 0) {
-        for (difference_type r = 0; r <= c_kh; ++r) {
-            for (difference_type c = 0; c < c_kw; ++c) {
-                K_rm[r*W + (W - c_kw + c)] = kernel(c_kh + r, c);
-            }
-        }
-    }
-    // Q1 → bottom-left: kernel[:c_kh, c_kw:] → K_rm[H-c_kh:H, 0:c_kw+1]
-    if (c_kh > 0) {
-        for (difference_type r = 0; r < c_kh; ++r) {
-            for (difference_type c = 0; c <= c_kw; ++c) {
-                K_rm[(H - c_kh + r)*W + c] = kernel(r, c_kh + c);
-            }
-        }
-    }
-    // Q2 → bottom-right: kernel[:c_kh, :c_kw] → K_rm[H-c_kh:H, W-c_kw:W]
-    if (c_kh > 0 && c_kw > 0) {
-        for (difference_type r = 0; r < c_kh; ++r) {
-            for (difference_type c = 0; c < c_kw; ++c) {
-                K_rm[(H - c_kh + r)*W + (W - c_kw + c)] = kernel(r, c);
-            }
-        }
-    }
-
-    // Allocate complex spectra
-    fftw_complex* A_fft = reinterpret_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * H * halfWplus1));
-    fftw_complex* K_fft = reinterpret_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * H * halfWplus1));
-    if (!A_fft || !K_fft) {
-        if (A_fft) fftw_free(A_fft);
-        if (K_fft) fftw_free(K_fft);
-        fftw_free(A_rm);
-        fftw_free(K_rm);
-        throw std::bad_alloc();
-    }
-
-    // Create plans (row-major simple API uses (h,w))
-    fftw_plan plan_A = fftw_plan_dft_r2c_2d(static_cast<int>(H), static_cast<int>(W), A_rm, A_fft, FFTW_ESTIMATE);
-    fftw_plan plan_kernel = fftw_plan_dft_r2c_2d(static_cast<int>(H), static_cast<int>(W), K_rm, K_fft, FFTW_ESTIMATE);
-    fftw_plan plan_output = fftw_plan_dft_c2r_2d(static_cast<int>(H), static_cast<int>(W), A_fft, A_rm, FFTW_ESTIMATE);
-
-    // Ensure plans are destroyed on scope exit
-    auto plan_deleter = [](fftw_plan *p) { return fftw_destroy_plan(*p); };
-    std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_A_delete(&plan_A, plan_deleter);
-    std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_kernel_delete(&plan_kernel, plan_deleter);
-    std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_output_delete(&plan_output, plan_deleter);
-
-    // Unlock before executing
-    fftw_lock.unlock();
-
-    // Execute forward FFTs
-    fftw_execute(plan_A);
-    fftw_execute(plan_kernel);
-
-    // Complex-domain operation over valid half-spectrum (H x (W/2+1))
-    for (difference_type r = 0; r < H; ++r) {
-        difference_type row_off = r * halfWplus1;
-        for (difference_type c = 0; c < halfWplus1; ++c) {
-            difference_type idx = row_off + c;
-            double ar = A_fft[idx][0];
-            double ai = A_fft[idx][1];
-            double kr = K_fft[idx][0];
-            double ki = K_fft[idx][1];
-            switch (fftw_type) {
-                case FFTW::CONV: {
-                    double nr = ar*kr - ai*ki;
-                    double ni = ar*ki + ai*kr;
-                    A_fft[idx][0] = nr;
-                    A_fft[idx][1] = ni;
-                    break;
-                }
-                case FFTW::DECONV: {
-                    double den = kr*kr + ki*ki;
-                    if (den == 0.0) {
-                        A_fft[idx][0] = 0.0;
-                        A_fft[idx][1] = 0.0;
-                    } else {
-                        double nr = (ar*kr + ai*ki)/den;
-                        double ni = (ai*kr - ar*ki)/den;
-                        A_fft[idx][0] = nr;
-                        A_fft[idx][1] = ni;
-                    }
-                    break;
-                }
-                case FFTW::XCORR: {
-                    // multiply by conj(kernel): (ar+iai)*(kr-iki)
-                    double nr = ar*kr + ai*ki;
-                    double ni = -ar*ki + ai*kr;
-                    A_fft[idx][0] = nr;
-                    A_fft[idx][1] = ni;
-                    break;
-                }
-            }
-        }
-    }
-
-    // Inverse FFT back to real row-major buffer
-    fftw_execute(plan_output);
-
-    // Relock before cleanup
-    fftw_lock.lock();
-
-    // Form output Array2D from A_rm and scale by 1/(h*w)
-    Array2D C(H, W);
-    const double scale = 1.0 / static_cast<double>(H * W);
-    for (difference_type r = 0; r < H; ++r) {
-        for (difference_type c = 0; c < W; ++c) {
-            C(r, c) = A_rm[r*W + c] * scale;
-        }
-    }
-
-    // Free temp buffers
-    fftw_free(A_rm);
-    fftw_free(K_rm);
-    fftw_free(A_fft);
-    fftw_free(K_fft);
-
-    return C;
-}  
 
 // Additional arithmetic operations ------------------------------------------//
 template <typename T, typename T_alloc> 

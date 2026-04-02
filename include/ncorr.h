@@ -10,6 +10,7 @@
 
 #include "Array2D.h"
 #include "Array2DOpenCV.h"
+#include "Array2DFFTW.h"
 #include "Image2D.h"
 #include "ROI2D.h"
 #include "Data2D.h"
