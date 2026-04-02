@@ -10,51 +10,10 @@
 #define	IMAGE2D_H
 
 #include "Array2D.h"
+#include "ImageProcessor.h"
 #include <opencv2/opencv.hpp>
-#include <set>
-#include <optional>
 
 namespace ncorr {     
-
-// Forward declarations
-class ImageProcessor;
-class VideoImporter;
-
-// Filter types for image preprocessing
-enum class FilterType {
-    SATURATION,    // Clip pixel values above a threshold
-    BANDPASS       // Gaussian bandpass filter (Ben's method)
-};
-
-// Configuration for image filters
-struct FilterConfig {
-    std::set<FilterType> filters;           // Which filters to apply
-    int saturation_level = 200;             // Level for saturation filter (0-255)
-    std::vector<int> bandpass_params = {5, 50};  // {r1, r2} for bandpass filter
-    
-    FilterConfig() = default;
-    FilterConfig(std::set<FilterType> f) : filters(std::move(f)) {}
-    FilterConfig(std::set<FilterType> f, int sat_level) : filters(std::move(f)), saturation_level(sat_level) {}
-    FilterConfig(std::set<FilterType> f, int sat_level, std::vector<int> bp) 
-        : filters(std::move(f)), saturation_level(sat_level), bandpass_params(std::move(bp)) {}
-    
-    bool has_saturation() const { return filters.count(FilterType::SATURATION) > 0; }
-    bool has_bandpass() const { return filters.count(FilterType::BANDPASS) > 0; }
-    bool empty() const { return filters.empty(); }
-};
-
-// Video import parameters
-struct VideoImportParams {
-    int frame_start = 1;       // 1-indexed start frame
-    int frame_end = -1;        // -1 means all frames
-    int frame_jump = 1;        // Frame step/skip
-    bool use_grayscale = true; // Convert to grayscale
-    bool use_red_channel = true; // If color, extract R channel (for DIC speckle patterns)
-    
-    VideoImportParams() = default;
-    VideoImportParams(int start, int end, int jump) 
-        : frame_start(start), frame_end(end), frame_jump(jump) {}
-};
 
 class Image2D final { 
     public:                 
@@ -140,79 +99,8 @@ class Image2D final {
         StorageMode storage_mode = StorageMode::FILE_PATH;
 };
 
-// ImageProcessor class for applying filters to images
-class ImageProcessor {
-    public:
-        typedef std::ptrdiff_t difference_type;
-        
-        // Single image operations
-        static cv::Mat saturate(const cv::Mat& input, int level = 200);
-        static cv::Mat apply_bandpass_filter(const cv::Mat& input, const std::vector<int>& params = {5, 50});
-        static cv::Mat apply_filters(const cv::Mat& input, const FilterConfig& config);
-        
-        // Batch operations
-        static std::vector<cv::Mat> saturate(const std::vector<cv::Mat>& input, int level = 200);
-        static std::vector<cv::Mat> apply_bandpass_filter(const std::vector<cv::Mat>& input, 
-                                                          const std::vector<int>& params = {5, 50});
-        static std::vector<cv::Mat> apply_filters(const std::vector<cv::Mat>& input, const FilterConfig& config);
-        
-        // Ben's filtering method (bandpass + normalization)
-        static std::pair<std::vector<cv::Mat>, std::pair<double, double>> 
-        filter_like_ben(const std::vector<cv::Mat>& input,
-                       const cv::Mat& mask,
-                       const std::vector<int>& params = {5, 50},
-                       const std::pair<double, double>* gs_boundaries = nullptr);
-        
-        static cv::Mat filter_like_ben_single(const cv::Mat& input,
-                                              const cv::Mat& mask,
-                                              const std::vector<int>& params = {5, 50},
-                                              const std::pair<double, double>* gs_boundaries = nullptr);
-        
-        // Utility functions
-        static std::pair<double, double> compute_grayscale_boundaries(const cv::Mat& image, const cv::Mat& mask);
-        static std::pair<double, double> compute_percentile_boundaries(const cv::Mat& image, const cv::Mat& mask,
-                                                                       double lower_pct = 5.0, double upper_pct = 95.0);
-        static cv::Mat normalize_and_clamp(const cv::Mat& image, const std::pair<double, double>& boundaries);
-        
-        // Conversion utilities
-        static cv::Mat array2d_to_mat(const Array2D<double>& arr);
-        static Array2D<double> mat_to_array2d(const cv::Mat& mat);
-};
-
-// VideoImporter class for extracting frames from video files
-class VideoImporter {
-    public:
-        typedef std::ptrdiff_t difference_type;
-        
-        // Import video to in-memory Image2D vector
-        static std::vector<Image2D> import_video(
-            const std::string& video_path,
-            const VideoImportParams& params = VideoImportParams(),
-            const FilterConfig& filter_config = FilterConfig(),
-            const std::string& name_prefix = "frame");
-        
-        // Import video and save frames to disk
-        static std::vector<Image2D> import_video_to_files(
-            const std::string& video_path,
-            const std::string& output_dir,
-            const VideoImportParams& params = VideoImportParams(),
-            const FilterConfig& filter_config = FilterConfig(),
-            const std::string& name_prefix = "frame");
-        
-        // Get video information
-        struct VideoInfo {
-            int total_frames;
-            int width;
-            int height;
-            double fps;
-            std::string codec;
-        };
-        static std::optional<VideoInfo> get_video_info(const std::string& video_path);
-        
-    private:
-        static cv::Mat extract_grayscale_frame(const cv::Mat& frame, bool use_red_channel);
-};
-
 }
+
+#include "VideoImporter.h"
 
 #endif	/* IMAGE2D_H */

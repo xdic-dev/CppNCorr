@@ -12,20 +12,13 @@
 #include <memory>
 #include <iostream>
 #include <fstream>
+#include <type_traits>
 #include <utility>
 #include <mutex>                
 #include <cmath>
 #include <algorithm>
 #include <limits>
 #include <string>
-
-// Non standard libraries
-extern "C" {                    // Blas - for matrix multiplication
-    void dgemm_(char*, char*, int*, int*, int*, double*, double*, int*, double*, int*, double*, double*, int*); 
-}  
-#include "fftw3.h"              // For convolution and deconvolution
-#include "opencv2/opencv.hpp"   // For imshow()
-#include "suitesparse/SuiteSparseQR.hpp"    // for in-paint
 
 namespace ncorr {          
 
@@ -75,6 +68,21 @@ enum class PAD { ZEROS, EXPAND_EDGES };
 enum class INTERP { NEAREST, LINEAR, CUBIC_KEYS, CUBIC_KEYS_PRECOMPUTE, QUINTIC_BSPLINE, QUINTIC_BSPLINE_PRECOMPUTE }; 
 enum class LINSOLVER { LU, QR, CHOL };
 
+template <typename T, typename T_alloc>
+class Array2D;
+
+Array2D<double, std::allocator<double>> conv(const Array2D<double, std::allocator<double>> &A,
+                                             const Array2D<double, std::allocator<double>> &B);
+Array2D<double, std::allocator<double>> deconv(const Array2D<double, std::allocator<double>> &A,
+                                               const Array2D<double, std::allocator<double>> &B);
+Array2D<double, std::allocator<double>> xcorr(const Array2D<double, std::allocator<double>> &A,
+                                              const Array2D<double, std::allocator<double>> &B);
+
+namespace details {
+Array2D<double, std::allocator<double>> blas_mat_mult(const Array2D<double, std::allocator<double>> &A,
+                                                      const Array2D<double, std::allocator<double>> &B);
+}
+
 template <typename T, typename T_alloc = std::allocator<T>> 
 class Array2D final { 
 // -------------------------------------------------------------------------- // 
@@ -100,9 +108,12 @@ class Array2D final {
         typedef details::interface_interp<details::base_interp<Array2D>>             interpolator; 
         typedef details::interface_linsolver<details::base_linsolver<Array2D>>          linsolver; 
         typedef T_alloc                                                            allocator_type;
+        typedef std::allocator_traits<allocator_type>                        allocator_traits_type;
         typedef Array2D                                                                 container;
         typedef const Array2D                                                     const_container;
-        typedef typename allocator_type::template rebind<bool>::other              bool_allocator;
+        template <typename T_other>
+        using rebind_allocator = typename allocator_traits_type::template rebind_alloc<T_other>;
+        typedef rebind_allocator<bool>                                            bool_allocator;
         typedef Array2D<bool, bool_allocator>                                      bool_container;
                                         
         template <typename T2, typename T_alloc2>
@@ -262,16 +273,7 @@ class Array2D final {
                 
         // Linsolvers --------------------------------------------------------//
         template<typename T_output = linsolver> 
-        typename std::enable_if<std::is_floating_point<value_type>::value, T_output>::type get_linsolver(LINSOLVER linsolver_type) const { 
-            linsolver linsolve;            
-            switch (linsolver_type) {             
-                case LINSOLVER::LU : linsolve = linsolver(new details::LU_linsolver<Array2D>(*this)); break;
-                case LINSOLVER::QR : linsolve = linsolver(new details::QR_linsolver<Array2D>(*this)); break;    
-                case LINSOLVER::CHOL : linsolve = linsolver(new details::CHOL_linsolver<Array2D>(*this)); break;          
-            } 
-            
-            return linsolve;
-        }
+        typename std::enable_if<std::is_floating_point<value_type>::value, T_output>::type get_linsolver(LINSOLVER linsolver_type) const;
                 
         //--------------------------------------------------------------------//
         // Operations interface ----------------------------------------------//
@@ -283,15 +285,13 @@ class Array2D final {
         // performance improvements. If regions are passed, they will trigger //
         // the R-value overload if one exists.                                //
         // These functions call private template member functions that use    //
-        // SFINAE to allow some operations for only some types (i.e. imshow() //
+        // SFINAE to allow some operations for only some types.               //
         // can only be called for arithmetic types).                          //
         // -------------------------------------------------------------------//
               
         // General operations ------------------------------------------------//      
         template <typename T2> 
-        friend Array2D<T2, typename allocator_type::template rebind<T2>::other> convert(const Array2D &A, const T2&) { return Array2D<T2, typename allocator_type::template rebind<T2>::other>(A); }
-        friend cv::Mat get_cv_img(const Array2D &A, value_type min, value_type max) { return A.this_cv_img(min, max); }
-        friend void imshow(const Array2D &A, difference_type delay) { A.this_imshow(delay); }
+        friend Array2D<T2, rebind_allocator<T2>> convert(const Array2D &A, const T2&) { return Array2D<T2, rebind_allocator<T2>>(A); }
         friend std::ostream& operator<<(std::ostream &os, const Array2D &A) { return A.this_stream(os); }      
         friend Array2D repmat(const Array2D &A, difference_type rows, difference_type cols) { return A.this_repmat(rows,cols); }    
         friend Array2D pad(const Array2D &A, difference_type padding, PAD pad_type = PAD::ZEROS) { return A.this_pad(padding,pad_type); }    
@@ -390,10 +390,6 @@ class Array2D final {
         // Matrix multiplication and convolution operations ------------------//
         // These have special overloads for double type
         friend Array2D operator*(const Array2D &A, const Array2D &B) { return A.this_mat_mult(B); }     
-        friend Array2D conv(const Array2D &A, const Array2D &B) { return A.this_conv(B); }     
-        friend Array2D deconv(const Array2D &A, const Array2D &B) { return A.this_deconv(B); }     
-        friend Array2D xcorr(const Array2D &A, const Array2D &B) { return A.this_xcorr(B); }     
-                        
         // Additional arithmetic operations ----------------------------------//
         friend value_type dot(const Array2D &x, const Array2D &y) { return x.this_dot(y); }     
         friend Array2D normalize(Array2D A) { return A.this_normalize(); } // by-value
@@ -432,10 +428,6 @@ class Array2D final {
         // -------------------------------------------------------------------//
         
         // General operation -------------------------------------------------//
-        template<typename T_output = cv::Mat> 
-        typename std::enable_if<std::is_arithmetic<value_type>::value, T_output>::type this_cv_img(value_type, value_type) const;
-        template<typename T_output = void> 
-        typename std::enable_if<std::is_arithmetic<value_type>::value, T_output>::type this_imshow(difference_type) const;
         template<typename T_output = std::ostream&> 
         typename std::enable_if<std::is_arithmetic<value_type>::value, T_output>::type this_stream(std::ostream&) const;
         Array2D this_repmat(difference_type, difference_type) const; 
@@ -506,16 +498,6 @@ class Array2D final {
         typename std::enable_if<std::is_same<value_type,double>::value, T_output>::type this_mat_mult(const Array2D&) const;
         template<typename T_output = Array2D> 
         typename std::enable_if<!std::is_same<value_type,double>::value, T_output>::type this_mat_mult(const Array2D&) const;        
-        
-        // Provide specific overload for double
-        template<typename T_output = Array2D> 
-        typename std::enable_if<std::is_same<value_type,double>::value, T_output>::type this_conv(const Array2D&) const;
-        template<typename T_output = Array2D> 
-        typename std::enable_if<std::is_same<value_type,double>::value, T_output>::type this_deconv(const Array2D&) const;     
-        template<typename T_output = Array2D> 
-        typename std::enable_if<std::is_same<value_type,double>::value, T_output>::type this_xcorr(const Array2D&) const;   
-        enum class FFTW { CONV, DECONV, XCORR };   
-        Array2D this_conv_base(const Array2D&, FFTW) const;
         
         // Additional arithmetic operations ----------------------------------//
         template<typename T_output = value_type> 
@@ -1635,215 +1617,6 @@ namespace details {
             std::shared_ptr<T_interp> ptr;            
     }; 
     
-    // Linsolver -------------------------------------------------------------//
-    template <typename T_container> 
-    class base_linsolver {    
-        // Base class for linsolver. Note that this class does not take into
-        // account if caller Array2D is const or not.
-        public:      
-            typedef typename T_container::value_type                             value_type;
-            typedef typename T_container::reference                               reference;
-            typedef typename T_container::size_type                               size_type; 
-            typedef typename T_container::difference_type                   difference_type;         
-            typedef typename T_container::coords                                     coords;        
-            typedef typename container_traits<T_container>::nonconst_container    container; 
-            typedef typename container_traits<T_container>::const_container const_container; 
-            
-            friend container;
-            
-            // Rule of 5 and destructor --------------------------------------//
-            base_linsolver() noexcept = default;
-            base_linsolver(const base_linsolver&) = default;
-            base_linsolver(base_linsolver&&) noexcept = default;
-            base_linsolver& operator=(const base_linsolver&) = default;  
-            base_linsolver& operator=(base_linsolver&&) = default;
-            virtual ~base_linsolver() noexcept = default;
-            
-            // Additional Constructors ---------------------------------------//            
-            // Copy input Array2D, and then perform in-place decomposition
-            base_linsolver(const_container &A) : x_buf(A.width(),1), A_factored_ptr(std::make_shared<container>(A)) { }
-            
-            // Conversion ----------------------------------------------------//
-            // This allows tests to see if factorization was successful
-            virtual operator bool() = 0;           
-
-            // Arithmetic methods --------------------------------------------//
-            container& backward_sub(const_container&, const_container&) const;
-            container& forward_sub(const_container&, const_container&) const;
-            virtual const_container& solve(const_container&) const = 0;
-                        
-            // Clone ---------------------------------------------------------//
-            virtual base_linsolver* clone() const = 0; 
-        
-        protected:
-            mutable container x_buf;                    // have a copy per
-            std::shared_ptr<container> A_factored_ptr;  // the factored matrix - immutable
-    };    
-    
-    template <typename T_container> 
-    class LU_linsolver final : public base_linsolver<T_container> { 
-        // Class for the LU solver
-        public:          
-            typedef typename base_linsolver<T_container>::value_type           value_type;
-            typedef typename base_linsolver<T_container>::reference             reference;
-            typedef typename base_linsolver<T_container>::size_type             size_type; 
-            typedef typename base_linsolver<T_container>::difference_type difference_type;         
-            typedef typename base_linsolver<T_container>::coords                   coords;        
-            typedef typename base_linsolver<T_container>::container             container;    
-            typedef typename base_linsolver<T_container>::const_container const_container; 
-                        
-            friend container;
-            
-            // Rule of 5 and destructor --------------------------------------//
-            LU_linsolver() : full_rank() { }
-            LU_linsolver(const LU_linsolver&) = default;
-            LU_linsolver(LU_linsolver&&) noexcept = default;
-            LU_linsolver& operator=(const LU_linsolver&) = default;  
-            LU_linsolver& operator=(LU_linsolver&&) = default;
-            ~LU_linsolver() noexcept = default;
-                        
-            // Additional Constructors ---------------------------------------//            
-            LU_linsolver(const_container&);
-            
-            // Conversion ----------------------------------------------------//
-            // Tests whether system is nonsingular
-            operator bool() override { return full_rank; }
-            
-            // Arithmetic methods --------------------------------------------//
-            const_container& solve(const_container&) const override;
-            
-            // Clone ---------------------------------------------------------//
-            LU_linsolver* clone() const override { return new LU_linsolver(*this); }
-        
-        private:
-            std::shared_ptr<container> piv_ptr; // pivots - immutable
-            bool full_rank;
-    }; 
-    
-    template <typename T_container> 
-    class QR_linsolver final : public base_linsolver<T_container> { 
-        // Class for QR solver
-        public:          
-            typedef typename base_linsolver<T_container>::value_type           value_type;
-            typedef typename base_linsolver<T_container>::reference             reference;
-            typedef typename base_linsolver<T_container>::size_type             size_type; 
-            typedef typename base_linsolver<T_container>::difference_type difference_type;         
-            typedef typename base_linsolver<T_container>::coords                   coords;        
-            typedef typename base_linsolver<T_container>::container             container;  
-            typedef typename base_linsolver<T_container>::const_container const_container; 
-            
-            friend container;
-            
-            // Rule of 5 and destructor --------------------------------------//
-            QR_linsolver() : full_rank(), rank() { }
-            QR_linsolver(const QR_linsolver&) = default;
-            QR_linsolver(QR_linsolver&&) noexcept = default;
-            QR_linsolver& operator=(const QR_linsolver&) = default;  
-            QR_linsolver& operator=(QR_linsolver&&) = default;
-            ~QR_linsolver() noexcept = default;
-                        
-            // Additional Constructors ---------------------------------------//            
-            QR_linsolver(const_container&);
-            
-            // Conversion ----------------------------------------------------//
-            // Tests whether system is nonsingular
-            operator bool() override { return full_rank; }
-                        
-            // Arithmetic methods --------------------------------------------//
-            std::pair<container, value_type> house(const_container&) const;
-            const_container& solve(const_container&) const override;
-            
-            // Clone ---------------------------------------------------------//
-            QR_linsolver* clone() const override { return new QR_linsolver(*this); }
-        
-        private:
-            std::shared_ptr<container> piv_ptr;  // pivots - immutable
-            std::shared_ptr<container> beta_ptr; // beta - immutable
-            bool full_rank;
-            difference_type rank;
-    }; 
-    
-    template <typename T_container> 
-    class CHOL_linsolver final : public base_linsolver<T_container> { 
-        // Class for cholesky solver
-        public:          
-            typedef typename base_linsolver<T_container>::value_type           value_type;
-            typedef typename base_linsolver<T_container>::reference             reference;
-            typedef typename base_linsolver<T_container>::size_type             size_type; 
-            typedef typename base_linsolver<T_container>::difference_type difference_type;         
-            typedef typename base_linsolver<T_container>::coords                   coords;        
-            typedef typename base_linsolver<T_container>::container             container;       
-            typedef typename base_linsolver<T_container>::const_container const_container; 
-            
-            friend container;
-            
-            // Rule of 5 and destructor --------------------------------------//
-            CHOL_linsolver() : pos_def() { }
-            CHOL_linsolver(const CHOL_linsolver&) = default;
-            CHOL_linsolver(CHOL_linsolver&&) noexcept = default;
-            CHOL_linsolver& operator=(const CHOL_linsolver&) = default;  
-            CHOL_linsolver& operator=(CHOL_linsolver&&) = default;
-            ~CHOL_linsolver() noexcept = default;
-                        
-            // Additional Constructors ---------------------------------------//            
-            CHOL_linsolver(const_container &A);
-            
-            // Conversion ----------------------------------------------------//
-            // Tests whether system is positive definite
-            operator bool() override { return pos_def; }
-                        
-            // Solve method --------------------------------------------------//
-            const_container& solve(const_container&) const override;
-            
-            // Clone ---------------------------------------------------------//
-            CHOL_linsolver* clone() const override { return new CHOL_linsolver(*this); }
-        
-        private:
-            bool pos_def;
-    }; 
-
-    template <typename T_linsolver> 
-    class interface_linsolver final { 
-        // This is a container for the base linsolver class to hide the inheritance 
-        // tree. 
-        public:     
-            typedef typename T_linsolver::value_type                 value_type;
-            typedef typename T_linsolver::reference                   reference;
-            typedef typename T_linsolver::size_type                   size_type; 
-            typedef typename T_linsolver::difference_type       difference_type;         
-            typedef typename T_linsolver::coords                         coords;        
-            typedef typename T_linsolver::container                   container;     
-            typedef typename T_linsolver::const_container       const_container; 
-             
-            template <typename T_linsolver2>
-            friend class interface_linsolver;
-            friend container;
-            
-            // Part of rule of 5 ---------------------------------------------//
-            interface_linsolver() noexcept : ptr(nullptr) { }
-            interface_linsolver(const interface_linsolver &linsolver) : ptr(linsolver.ptr ? linsolver.ptr->clone() : nullptr) { }
-            interface_linsolver(interface_linsolver &&linsolver) : ptr(std::move(linsolver.ptr)) { }
-            interface_linsolver& operator=(const interface_linsolver &linsolver) { ptr.reset(linsolver.ptr ? linsolver.ptr->clone() : nullptr); return *this; }
-            interface_linsolver& operator=(interface_linsolver &&linsolver) { ptr = std::move(linsolver.ptr); return *this; }
-            ~interface_linsolver() noexcept = default;
-            
-            // Additional Constructors ---------------------------------------//
-            // explicit is important since ptr is wrapped in shared_ptr, which 
-            // will call delete on ptr when this object goes out of scope.
-            explicit interface_linsolver(T_linsolver *ptr) : ptr(ptr) { }
-            
-            // Conversion ----------------------------------------------------//
-            // Allow implicit conversions to bool to test whether system is "valid"
-            // (i.e. nonsingular for LU decomposition, positive definite for 
-            // cholesky decomposition, etc)
-            operator bool() { return (*ptr); }
-                                                                    
-            // Solve method --------------------------------------------------//
-            const_container& solve(const_container &b) const { return ptr->solve(b); }
-            
-        private:        
-            std::shared_ptr<T_linsolver> ptr;            
-    }; 
 }
 
 // ---------------------------------------------------------------------------//
@@ -1992,46 +1765,6 @@ inline const T& Array2D<T,T_alloc>::operator()(difference_type p1, difference_ty
 
     return ptr[sub2ind(p1,p2)];
 }          
-
-// General operations --------------------------------------------------------//
-template <typename T, typename T_alloc> 
-template <typename T_output>
-typename std::enable_if<std::is_arithmetic<T>::value, T_output>::type Array2D<T,T_alloc>::this_cv_img(value_type min, value_type max) const {    
-    // Returns opencv style matrix in unsigned char format so it can be displayed
-    // as an image
-
-    // Convert to cv::Mat using unsigned char type
-    cv::Mat cv_img(h, w, cv::DataType<uchar>::type); 
-    double conversion = (std::abs(max - min) > std::numeric_limits<double>::epsilon()) ? std::numeric_limits<uchar>::max() / (max - min) : 0;
-    for (difference_type p2 = 0; p2 < w; ++p2) {
-        for (difference_type p1 = 0; p1 < h; ++p1) {
-            // Mat is row-major, so must convert from column major.
-            double val = ((*this)(p1,p2) - min) * conversion;
-            if (val < 0) {
-                cv_img.at<uchar>(p1,p2) = 0;
-            } else if (val > 255) {
-                cv_img.at<uchar>(p1,p2) = 255;
-            } else {
-                cv_img.at<uchar>(p1,p2) = val;
-            }
-        }
-    }   
-    
-    return cv_img;
-}
-
-// imshow is only supported for arithmetic types
-template <typename T, typename T_alloc> 
-template <typename T_output>
-typename std::enable_if<std::is_arithmetic<T>::value, T_output>::type Array2D<T,T_alloc>::this_imshow(difference_type delay) const {    
-    // opencv's imshow function doesnt work for empty arrays
-    chk_minsize_op(1,1,"imshow");
-
-    // Get cv style matrix and show it
-    cv::Mat cv_img = this_cv_img(this_min(), this_max());
-    cv::imshow("Array2D", cv_img);
-    delay == -1 ? cv::waitKey() : cv::waitKey(delay);
-}
 
 template <typename T, typename T_alloc> 
 template <typename T_output>
@@ -2564,264 +2297,8 @@ typename std::enable_if<!std::is_same<T,double>::value, T_output>::type  Array2D
 template <typename T, typename T_alloc> 
 template <typename T_output> 
 typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T,T_alloc>::this_mat_mult(const Array2D<T,T_alloc> &A) const {    
-    chk_mult_size(A);
-
-    // Note this algorithm performs C = ALPHA*A*B + BETA*C. C will be value 
-    // initialized to 0.
-    Array2D B(h, A.w);
-
-    // Call blas routine for double precision matrix-matrix multiplication -
-    // note that there might be some narrowing conversion from difference_type 
-    // to int.
-    char TRANS = 'N';
-    int M = h;
-    int N = A.w;
-    int K = w;
-    double ALPHA = 1.0;    
-    double BETA = 0.0;       
-    dgemm_(&TRANS, &TRANS, &M, &N, &K, &ALPHA, ptr, &M, A.ptr, &K, &BETA, B.ptr, &M);
-
-    return B;
+    return details::blas_mat_mult(*this, A);
 }
-
-namespace details { 
-    // -----------------------------------------------------------------------//
-    // FFTW allocator for conv function --------------------------------------//
-    // -----------------------------------------------------------------------//    
-    template <typename T> 
-    class fftw_allocator final {
-        public:
-            typedef T                                                value_type;
-            typedef T*                                                  pointer;
-            typedef const T*                                      const_pointer;
-            typedef T&                                                reference;
-            typedef const T&                                    const_reference;
-            typedef std::size_t                                       size_type;
-            typedef std::ptrdiff_t                              difference_type;
-                       
-            // Rule of 5 and destructor --------------------------------------//             
-            fftw_allocator() noexcept = default;
-            fftw_allocator(const fftw_allocator&) noexcept = default;  
-            fftw_allocator(fftw_allocator&&) noexcept = default;     
-            fftw_allocator& operator=(const fftw_allocator&) = default;
-            fftw_allocator& operator=(fftw_allocator&&) = default;   
-            ~fftw_allocator() noexcept = default;
-            
-            // Other functions -----------------------------------------------//
-            // Note that fftw_malloc and fftw_free allocate aligned double 
-            // precision arrays.
-            pointer allocate(difference_type s, const void * = 0) { 
-                pointer ptr = static_cast<pointer>(malloc_function(s * sizeof(value_type))); 
-                if (!ptr) {
-                    std::cerr << "Failed to allocate memory using allocate in fftw_allocator." << std::endl;
-                    throw std::bad_alloc();
-                }
-                
-                return ptr;
-            }
-            void deallocate(pointer ptr, difference_type) { free_function(ptr); }                                                            
-            void construct(pointer ptr, const_reference val = value_type()) { ::new((void *)ptr) value_type(val); }      
-            void destroy(pointer ptr) { ptr->~value_type(); }            
-            template<typename T2> 
-            struct rebind { typedef fftw_allocator<T2> other; };
-        
-        private:
-            // These are specialized based on the type. Input is already 
-            // converted to bytes by allocate().
-            void* malloc_function(difference_type s) { return malloc(s); }
-            void free_function(pointer ptr) { return free(ptr); }
-    };
-    // Specialize malloc_function and free_function for double. These will use
-    // fftw_malloc so SIMD instructions can be used. Input is already converted 
-    // to bytes by allocate().
-    template<>
-    inline void* fftw_allocator<double>::malloc_function(difference_type s) { return fftw_malloc(s); }
-    template<>
-    inline void fftw_allocator<double>::free_function(pointer ptr) { fftw_free(ptr); }
-    // -----------------------------------------------------------------------//
-    // -----------------------------------------------------------------------//
-    // -----------------------------------------------------------------------//  
-}
-
-template <typename T, typename T_alloc> 
-template <typename T_output> 
-typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T,T_alloc>::this_conv(const Array2D &A) const { return this_conv_base(A, FFTW::CONV); }      
-
-template <typename T, typename T_alloc> 
-template <typename T_output> 
-typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T,T_alloc>::this_deconv(const Array2D &A) const { return this_conv_base(A, FFTW::DECONV); }
-
-template <typename T, typename T_alloc> 
-template <typename T_output> 
-typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T,T_alloc>::this_xcorr(const Array2D &A) const { return this_conv_base(A, FFTW::XCORR); }      
-
-namespace details {
-    extern std::mutex fftw_mutex; // Declare fftw_mutex
-}
-template <typename T, typename T_alloc> 
-Array2D<T,T_alloc> Array2D<T,T_alloc>::this_conv_base(const Array2D &kernel, FFTW fftw_type) const {
-    using details::fftw_allocator;
-    
-    chk_kernel_size(kernel);
-    
-    // According to FFTW documentation, the only thread safe function is 
-    // fftw_execute
-    std::unique_lock<std::mutex> fftw_lock(details::fftw_mutex);
-
-    // Allocate row-major temporary buffers for FFTW simple API
-    const difference_type H = h;
-    const difference_type W = w;
-    const difference_type halfWplus1 = (W/2) + 1;
-
-    double* A_rm = static_cast<double*>(fftw_malloc(sizeof(double) * H * W));
-    double* K_rm = static_cast<double*>(fftw_malloc(sizeof(double) * H * W));
-    if (!A_rm || !K_rm) {
-        if (A_rm) fftw_free(A_rm);
-        if (K_rm) fftw_free(K_rm);
-        throw std::bad_alloc();
-    }
-    // Zero initialize
-    std::fill(A_rm, A_rm + H*W, 0.0);
-    std::fill(K_rm, K_rm + H*W, 0.0);
-
-    // Copy input array (*this) to row-major buffer
-    for (difference_type r = 0; r < H; ++r) {
-        for (difference_type c = 0; c < W; ++c) {
-            A_rm[r*W + c] = (*this)(r, c);
-        }
-    }
-
-    // Wrap kernel center to top-left into K_rm using (H,W)
-    const difference_type KH = kernel.h;
-    const difference_type KW = kernel.w;
-    const difference_type c_kh = (KH - 1) / 2;
-    const difference_type c_kw = (KW - 1) / 2;
-
-    // Q4 → top-left: kernel[c_kh: , c_kw: ] → K_rm[0:c_kh+1, 0:c_kw+1]
-    for (difference_type r = 0; r <= c_kh; ++r) {
-        for (difference_type c = 0; c <= c_kw; ++c) {
-            K_rm[r*W + c] = kernel(c_kh + r, c_kw + c);
-        }
-    }
-    // Q3 → top-right: kernel[c_kh: , :c_kw] → K_rm[0:c_kh+1, W-c_kw:W]
-    if (c_kw > 0) {
-        for (difference_type r = 0; r <= c_kh; ++r) {
-            for (difference_type c = 0; c < c_kw; ++c) {
-                K_rm[r*W + (W - c_kw + c)] = kernel(c_kh + r, c);
-            }
-        }
-    }
-    // Q1 → bottom-left: kernel[:c_kh, c_kw:] → K_rm[H-c_kh:H, 0:c_kw+1]
-    if (c_kh > 0) {
-        for (difference_type r = 0; r < c_kh; ++r) {
-            for (difference_type c = 0; c <= c_kw; ++c) {
-                K_rm[(H - c_kh + r)*W + c] = kernel(r, c_kh + c);
-            }
-        }
-    }
-    // Q2 → bottom-right: kernel[:c_kh, :c_kw] → K_rm[H-c_kh:H, W-c_kw:W]
-    if (c_kh > 0 && c_kw > 0) {
-        for (difference_type r = 0; r < c_kh; ++r) {
-            for (difference_type c = 0; c < c_kw; ++c) {
-                K_rm[(H - c_kh + r)*W + (W - c_kw + c)] = kernel(r, c);
-            }
-        }
-    }
-
-    // Allocate complex spectra
-    fftw_complex* A_fft = reinterpret_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * H * halfWplus1));
-    fftw_complex* K_fft = reinterpret_cast<fftw_complex*>(fftw_malloc(sizeof(fftw_complex) * H * halfWplus1));
-    if (!A_fft || !K_fft) {
-        if (A_fft) fftw_free(A_fft);
-        if (K_fft) fftw_free(K_fft);
-        fftw_free(A_rm);
-        fftw_free(K_rm);
-        throw std::bad_alloc();
-    }
-
-    // Create plans (row-major simple API uses (h,w))
-    fftw_plan plan_A = fftw_plan_dft_r2c_2d(static_cast<int>(H), static_cast<int>(W), A_rm, A_fft, FFTW_ESTIMATE);
-    fftw_plan plan_kernel = fftw_plan_dft_r2c_2d(static_cast<int>(H), static_cast<int>(W), K_rm, K_fft, FFTW_ESTIMATE);
-    fftw_plan plan_output = fftw_plan_dft_c2r_2d(static_cast<int>(H), static_cast<int>(W), A_fft, A_rm, FFTW_ESTIMATE);
-
-    // Ensure plans are destroyed on scope exit
-    auto plan_deleter = [](fftw_plan *p) { return fftw_destroy_plan(*p); };
-    std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_A_delete(&plan_A, plan_deleter);
-    std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_kernel_delete(&plan_kernel, plan_deleter);
-    std::unique_ptr<fftw_plan,decltype(plan_deleter)> plan_output_delete(&plan_output, plan_deleter);
-
-    // Unlock before executing
-    fftw_lock.unlock();
-
-    // Execute forward FFTs
-    fftw_execute(plan_A);
-    fftw_execute(plan_kernel);
-
-    // Complex-domain operation over valid half-spectrum (H x (W/2+1))
-    for (difference_type r = 0; r < H; ++r) {
-        difference_type row_off = r * halfWplus1;
-        for (difference_type c = 0; c < halfWplus1; ++c) {
-            difference_type idx = row_off + c;
-            double ar = A_fft[idx][0];
-            double ai = A_fft[idx][1];
-            double kr = K_fft[idx][0];
-            double ki = K_fft[idx][1];
-            switch (fftw_type) {
-                case FFTW::CONV: {
-                    double nr = ar*kr - ai*ki;
-                    double ni = ar*ki + ai*kr;
-                    A_fft[idx][0] = nr;
-                    A_fft[idx][1] = ni;
-                    break;
-                }
-                case FFTW::DECONV: {
-                    double den = kr*kr + ki*ki;
-                    if (den == 0.0) {
-                        A_fft[idx][0] = 0.0;
-                        A_fft[idx][1] = 0.0;
-                    } else {
-                        double nr = (ar*kr + ai*ki)/den;
-                        double ni = (ai*kr - ar*ki)/den;
-                        A_fft[idx][0] = nr;
-                        A_fft[idx][1] = ni;
-                    }
-                    break;
-                }
-                case FFTW::XCORR: {
-                    // multiply by conj(kernel): (ar+iai)*(kr-iki)
-                    double nr = ar*kr + ai*ki;
-                    double ni = -ar*ki + ai*kr;
-                    A_fft[idx][0] = nr;
-                    A_fft[idx][1] = ni;
-                    break;
-                }
-            }
-        }
-    }
-
-    // Inverse FFT back to real row-major buffer
-    fftw_execute(plan_output);
-
-    // Relock before cleanup
-    fftw_lock.lock();
-
-    // Form output Array2D from A_rm and scale by 1/(h*w)
-    Array2D C(H, W);
-    const double scale = 1.0 / static_cast<double>(H * W);
-    for (difference_type r = 0; r < H; ++r) {
-        for (difference_type c = 0; c < W; ++c) {
-            C(r, c) = A_rm[r*W + c] * scale;
-        }
-    }
-
-    // Free temp buffers
-    fftw_free(A_rm);
-    fftw_free(K_rm);
-    fftw_free(A_fft);
-    fftw_free(K_fft);
-
-    return C;
-}  
 
 // Additional arithmetic operations ------------------------------------------//
 template <typename T, typename T_alloc> 
@@ -2847,22 +2324,6 @@ typename std::enable_if<std::is_floating_point<T>::value, T_output>::type Array2
     norm = std::sqrt(norm);
 
     return (*this) /= norm;
-}
-
-template <typename T, typename T_alloc> 
-template <typename T_output> 
-typename std::enable_if<std::is_floating_point<T>::value, T_output>::type Array2D<T,T_alloc>::this_linsolve(const Array2D &b) const {
-    // Use LU with partial pivoting for a square matrix, and QR with column 
-    // pivoting for rectangular matrices. This supports b with more than one 
-    // column; it solves one column at a time and stores a copy in x.
-    auto linsolver = ((h == w) ? get_linsolver(LINSOLVER::LU) : get_linsolver(LINSOLVER::QR));
-    
-    container x(w, b.width());
-    for (difference_type p2 = 0; p2 < b.width(); ++p2) {
-        x(all,p2) = linsolver.solve(b(all,p2));
-    }
-    
-    return x;
 }
 
 // Utility Methods -----------------------------------------------------------// 
@@ -3000,7 +2461,7 @@ template <typename T, typename T_alloc>
 typename Array2D<T,T_alloc>::pointer Array2D<T,T_alloc>::allocate(difference_type s_init) {
     pointer ptr_new;
     try {
-        ptr_new = alloc.allocate(s_init);
+        ptr_new = allocator_traits_type::allocate(alloc, s_init);
     } catch (std::bad_alloc &e) {
         // Bad alloc doesn't have a what() message, so just add one to terminal
         std::cerr << "---------------------------------------------" << std::endl 
@@ -3037,9 +2498,9 @@ void Array2D<T,T_alloc>::destroy_and_deallocate() {
     if (ptr) {
         // Must destroy objects first before deallocating memory
         for (pointer ptr_delete = ptr + s; ptr_delete != ptr; /* empty */) {
-            alloc.destroy(--ptr_delete);
+            allocator_traits_type::destroy(alloc, --ptr_delete);
         }
-        alloc.deallocate(ptr, s);
+        allocator_traits_type::deallocate(alloc, ptr, s);
     }
 }
 
@@ -3148,7 +2609,7 @@ namespace details {
     
     // Simple Iterator -------------------------------------------------------//
     template <typename T_container> 
-    inline typename simple_iterator<T_container>::simple_iterator& simple_iterator<T_container>::operator++() {    
+    inline simple_iterator<T_container>& simple_iterator<T_container>::operator++() {
         this->chk_valid_increment();
 
         ++this->p;
@@ -3157,7 +2618,7 @@ namespace details {
     }   
 
     template <typename T_container> 
-    inline typename simple_iterator<T_container>::simple_iterator& simple_iterator<T_container>::operator--() {    
+    inline simple_iterator<T_container>& simple_iterator<T_container>::operator--() {
         this->chk_valid_decrement();
 
         --this->p;
@@ -3180,7 +2641,7 @@ namespace details {
     }
     
     template <typename T_container> 
-    inline typename sub_iterator<T_container>::sub_iterator& sub_iterator<T_container>::operator++() {    
+    inline sub_iterator<T_container>& sub_iterator<T_container>::operator++() {
         this->chk_valid_increment();
 
         // increment sub_p, then determine position from it
@@ -3191,7 +2652,7 @@ namespace details {
     }   
 
     template <typename T_container> 
-    inline typename sub_iterator<T_container>::sub_iterator& sub_iterator<T_container>::operator--() {    
+    inline sub_iterator<T_container>& sub_iterator<T_container>::operator--() {
         this->chk_valid_decrement();
 
         // decrement sub_p, then determine position from it
@@ -3226,7 +2687,7 @@ namespace details {
     }  
     
     template <typename T_container> 
-    inline typename bool_iterator<T_container>::bool_iterator& bool_iterator<T_container>::operator++() {   
+    inline bool_iterator<T_container>& bool_iterator<T_container>::operator++() {
         this->chk_valid_increment();
         
         // increment p until true value is found
@@ -3239,7 +2700,7 @@ namespace details {
     }   
 
     template <typename T_container> 
-    inline typename bool_iterator<T_container>::bool_iterator& bool_iterator<T_container>::operator--() {   
+    inline bool_iterator<T_container>& bool_iterator<T_container>::operator--() {
         this->chk_valid_decrement();
 
         // decrement p until true value is found
@@ -3813,327 +3274,11 @@ namespace details {
         }
     } 
         
-    // base_linsolver --------------------------------------------------------//
-    template <typename T_container>    
-    typename base_linsolver<T_container>::container& base_linsolver<T_container>::backward_sub(const_container &A, const_container &b) const {
-        if (A.height() != A.width()) {
-            throw std::invalid_argument("Attempted to perform backward substitution using an Array with size " + A.size_2D_string() +
-                                        ". Array must be square.");
-        }
-        if (A.height() != b.height() || b.width() != 1) {
-            throw std::invalid_argument("Attempted to perform backward substitution using an A with size " + A.size_2D_string() +
-                                        " and a b with size " + b.size_2D_string() + ".");
-        }
-        
-        // Copy b into x_buf, and then solve in-place - since A is square, they
-        // are the same size.
-        std::copy(b.get_pointer(), b.get_pointer() + b.size(), x_buf.get_pointer());
-        for (difference_type p = A.height()-1; p > 0; --p) {
-            if ((std::abs((*A_factored_ptr)(p,p)) < std::numeric_limits<value_type>::epsilon())) {
-                // Set this x value to 1 for singular matrices
-                x_buf(p) = 1;
-            } else {
-                x_buf(p) /= (*A_factored_ptr)(p,p);
-            }
-            
-            for (difference_type p1 = 0; p1 < p; ++p1) {
-                x_buf(p1) -= x_buf(p) * (*A_factored_ptr)(p1,p);
-            }
-        }
-
-        if ((std::abs((*A_factored_ptr)(0,0)) < std::numeric_limits<value_type>::epsilon())) {
-            x_buf(0) = 1;
-        } else {
-            x_buf(0) /= (*A_factored_ptr)(0,0);            
-        }
-
-        return x_buf;
-    }
-    
-    template <typename T_container>    
-    typename base_linsolver<T_container>::container& base_linsolver<T_container>::forward_sub(const_container &A, const_container &b) const {
-        if (A.height() != A.width()) {
-            throw std::invalid_argument("Attempted to perform forward substitution using an Array with size " + A.size_2D_string() +
-                                        ". Array must be square.");
-        }
-        if (A.height() != b.height() || b.width() != 1) {
-            throw std::invalid_argument("Attempted to perform forward substitution using an A with size " + A.size_2D_string() +
-                                        " and a b with size " + b.size_2D_string() + ".");
-        }
-           
-        // Copy b into x_buf, and then solve in-place - since A is square, they
-        // are the same size.
-        std::copy(b.get_pointer(), b.get_pointer() + b.size(), x_buf.get_pointer());
-        for (difference_type p = 0; p < A.height() - 1; ++p) {
-            if ((std::abs((*A_factored_ptr)(p,p)) < std::numeric_limits<value_type>::epsilon())) {
-                // Set this x value to 1 for singular matrices
-                x_buf(p) = 1;
-            } else {
-                x_buf(p) /= (*A_factored_ptr)(p,p);
-            }
-            
-            for (difference_type p1 = p + 1; p1 < A_factored_ptr->height(); ++p1) {
-                x_buf(p1) -= x_buf(p) * (*A_factored_ptr)(p1,p);
-            }
-        }
-
-        if ((std::abs((*A_factored_ptr)(last,last)) < std::numeric_limits<value_type>::epsilon())) {
-            x_buf(last) = 1;
-        } else {
-            x_buf(last) /= (*A_factored_ptr)(last,last);            
-        }
-
-        return x_buf;
-    }
-    
-    // LU_linsolver ----------------------------------------------------------//
-    template <typename T_container>    
-    LU_linsolver<T_container>::LU_linsolver(const_container &A) : base_linsolver<container>(A), piv_ptr(std::make_shared<container>(A.height(),1)), full_rank(true) {
-        if (A.height() != A.width()) {
-            throw std::invalid_argument("Attempted to perform LU decomposition on array of size " + A.size_2D_string() + 
-                                        ". Array must be square.");  
-        }
-                
-        // From Matrix Operations Golab & Van Loan 
-        // LU decomposition with partial pivoting
-        for (difference_type p = 0; p < this->A_factored_ptr->height()-1; ++p) {
-            // Find mu, the pivot
-            difference_type mu = std::max_element(&(*this->A_factored_ptr)(p,p), &(*this->A_factored_ptr)(0,p) + this->A_factored_ptr->height()) - &(*this->A_factored_ptr)(0,p);
-            (*this->piv_ptr)(p) = mu; // store it
-            
-            // Swap rows
-            for (difference_type p2 = p; p2 < this->A_factored_ptr->width(); ++p2) {
-                value_type buf = (*this->A_factored_ptr)(p,p2);
-                (*this->A_factored_ptr)(p,p2) = (*this->A_factored_ptr)(mu,p2);
-                (*this->A_factored_ptr)(mu,p2) = buf;
-            }
-                        
-            // Test to make sure index at (i,i) isn't close to zero
-            if (std::abs((*this->A_factored_ptr)(p,p)) < std::numeric_limits<value_type>::epsilon()) {
-                full_rank = false;
-            } else {
-                for (difference_type p1 = p+1; p1 < this->A_factored_ptr->height(); ++p1) {
-                    (*this->A_factored_ptr)(p1,p) /= (*this->A_factored_ptr)(p,p); 
-                }
-                              
-                for (difference_type p2 = p+1; p2 < this->A_factored_ptr->width(); ++p2) {
-                    for (difference_type p1 = p+1; p1 < this->A_factored_ptr->height(); ++p1) {
-                        (*this->A_factored_ptr)(p1,p2) -= (*this->A_factored_ptr)(p1,p) * (*this->A_factored_ptr)(p,p2);
-                    }
-                }
-            }
-        }
-        
-        // Test last diagonal since loop exits before then
-        if (std::abs((*this->A_factored_ptr)(last,last)) < std::numeric_limits<value_type>::epsilon()) {
-            full_rank = false;
-        }
-    }      
-        
-    template <typename T_container>    
-    typename LU_linsolver<T_container>::const_container& LU_linsolver<T_container>::solve(const_container &b) const {
-        if ((*this->A_factored_ptr).height() != b.height() || b.width() != 1) {
-            throw std::invalid_argument("Attempted to solve LU decomposition using b of size " + b.size_2D_string() + 
-                                        " on an Array of size " + (*this->A_factored_ptr).size_2D_string() + ".");  
-        }
-        
-        // For singular matrices, this will substitute 1 for indeterminant coordinates
-        // t(P)LUx = b 
-        // 1) Solve Ly = Pb
-        // 2) Solve Ux = y
-        
-        // copy b into x_buf first
-        std::copy(b.get_pointer(), b.get_pointer() + b.size(), this->x_buf.get_pointer());
-        for (difference_type p = 0; p < b.height()-1; ++p) {
-            // Swap element
-            value_type buf = this->x_buf((*piv_ptr)(p));
-            this->x_buf((*piv_ptr)(p)) = this->x_buf(p);
-            this->x_buf(p) = buf;
-
-            // Scale
-            for (difference_type p1 = p+1; p1 < b.height(); ++p1) {
-                this->x_buf(p1) -= this->x_buf(p) * (*this->A_factored_ptr)(p1,p);
-            }
-        }        
-        // Solve Ux = y and return it
-        return this->backward_sub((*this->A_factored_ptr), this->x_buf);
-    }
-    
-    // QR_linsolver ----------------------------------------------------------//
-    template <typename T_container>    
-    QR_linsolver<T_container>::QR_linsolver(const_container &A) : base_linsolver<container>(A), piv_ptr(std::make_shared<container>(A.width(),1)), beta_ptr(std::make_shared<container>(A.width(),1)), full_rank(true), rank(0) {        
-        // From Matrix Operations Golab & Van Loan 
-        // QR decomposition with column pivoting
-        
-        // QR related algorithms use the Array2D interface since most of the 
-        // bottleneck should be computational. This simplifies some arithmetic.
-        
-        container c(A.width(),1);
-        for (difference_type p2 = 0; p2 < A.width(); ++p2) {
-            c(p2) = dot(A(all,p2),A(all,p2));
-        }    
-        value_type tau = max(c);
-        difference_type k = find(c == tau);
-        difference_type min_dim = std::min(A.height(), A.width());
-        while (std::abs(tau) >= std::numeric_limits<value_type>::epsilon() && tau > 0) {
-            ++rank;
-            (*piv_ptr)(rank-1) = k;
-
-            // Swap columns
-            container col_buf = (*this->A_factored_ptr)(all,k);
-            (*this->A_factored_ptr)(all,k) = (*this->A_factored_ptr)(all,rank-1);
-            (*this->A_factored_ptr)(all,rank-1) = col_buf;
-            
-            // Swap c
-            value_type buf_c = c(k);
-            c(k) = c(rank-1);
-            c(rank-1) = buf_c;
-            
-            // Get householder vector
-            auto h_pair = house((*this->A_factored_ptr)({rank-1,last},rank-1));
-            (*beta_ptr)(rank-1) = h_pair.second; // store beta
-                        
-            (*this->A_factored_ptr)({rank-1,last},{rank-1,last}) = (*this->A_factored_ptr)({rank-1,last},{rank-1,last}) - h_pair.second * h_pair.first * ( t(h_pair.first) * (*this->A_factored_ptr)({rank-1,last},{rank-1,last}) );
-            (*this->A_factored_ptr)({rank,last},rank-1) = h_pair.first({1,(*this->A_factored_ptr).height()-rank});
-            
-            for (difference_type p2 = rank; p2 < (*this->A_factored_ptr).width(); ++p2) {
-                c(p2) = c(p2) - std::pow((*this->A_factored_ptr)(rank-1,p2),2);
-            }
-                        
-            if (rank < min_dim) {
-                tau = max(c({rank,last}));
-                k = find(c == tau, rank);
-            } else {
-                tau = 0;
-            }
-        }        
-        // Test if full (column) rank
-        full_rank = (rank == (*this->A_factored_ptr).width());
-    }          
-    
-    template <typename T_container>    
-    std::pair<typename QR_linsolver<T_container>::container,typename QR_linsolver<T_container>::value_type> QR_linsolver<T_container>::house(const_container &x) const {
-        if (x.width() != 1) {
-            throw std::invalid_argument("Attempted to get household vector for vector of size " + x.size_2D_string() + 
-                                        ". Vector must be a column vector.");  
-        }
-        
-        value_type sigma = dot(x({1,last}),x({1,last}));
-        container v(x.height(),1,1);
-        v({1,last}) = x({1,last});
-        value_type beta = 0;
-        if (std::abs(sigma) > std::numeric_limits<value_type>::epsilon()) {
-            value_type mu = std::sqrt(std::pow(x(0),2) + sigma);
-            if (std::abs(x(0)) < std::numeric_limits<value_type>::epsilon() || x(0) < 0) {
-                v(0) = x(0) - mu;
-            } else {
-                v(0) = -sigma / (x(0) + mu);
-            }
-            beta = 2 * std::pow(v(0),2) / (sigma + std::pow(v(0),2));
-            v = v/v(0);
-        }
-        
-        return {std::move(v),std::move(beta)};
-    }
-    
-    template <typename T_container>    
-    typename QR_linsolver<T_container>::const_container& QR_linsolver<T_container>::solve(const_container &b) const {
-        if ((*this->A_factored_ptr).height() != b.height() || b.width() != 1) {
-            throw std::invalid_argument("Attempted to solve QR decomposition using b of size " + b.size_2D_string() + 
-                                        " on an Array of size " + (*this->A_factored_ptr).size_2D_string() + ".");  
-        }
-        
-        // Obtains the least squares solution for over determined systems. For
-        // non full-rank systems, this will determine the basic solution.
-        // QRt(P)x = b
-        // 1) Find Rt(P)x = t(Q)b = y
-        // 2) Solve Rt(P)x = y
-        container y(b);
-        container v(b.height(),1); // buffer for householder vector
-        for (difference_type p = 0; p < rank; ++p) {
-            v(p) = 1;
-            v({p+1,last}) = (*this->A_factored_ptr)({p+1,last},p);
-            y({p,last}) = y({p,last}) - (*beta_ptr)(p) * v({p,last}) * (t( v({p,last}) ) * y({p,last}));
-        }
-                        
-        // Solve for t(P)*x - stores results in x_buf
-        this->backward_sub((*this->A_factored_ptr)({0,rank-1},{0,rank-1}),y({0,rank-1}));
-        
-        // Solve for basic solution
-        this->x_buf({rank,last}) = 0; // set rest of x is set to zero for basic solution
-        for (difference_type p = rank; p > 0; --p) {
-            value_type buf = this->x_buf((*piv_ptr)(p-1));
-            this->x_buf((*piv_ptr)(p-1)) = this->x_buf(p-1);
-            this->x_buf(p-1) = buf;    
-        }
-        
-        return this->x_buf;
-    }
-    
-    // CHOL_linsolver ----------------------------------------------------------//
-    template <typename T_container>    
-    CHOL_linsolver<T_container>::CHOL_linsolver(const_container &A) : base_linsolver<container>(A), pos_def(true) {
-        if (A.height() != A.width()) {
-            throw std::invalid_argument("Attempted to perform Cholesky decomposition on array of size " + A.size_2D_string() + 
-                                        ". Array must be square.");  
-        }
-        
-        // From Matrix Operations Golab & Van Loan 
-        // Returns Cholesky decomposition in the lower AND upper half of the matrix.
-        // This allows forward and backward substitution to be used without transposing.
-        for (difference_type p = 0; p < (*this->A_factored_ptr).height(); ++p) {
-            if (p > 0) {
-                for (difference_type p1 = this->A_factored_ptr->height() - 1; p1 >= p; --p1) {
-                    double buf = 0.0;
-                    for (difference_type p2 = 0; p2 < p; ++p2) {
-                        buf += (*this->A_factored_ptr)(p1,p2) * (*this->A_factored_ptr)(p,p2);
-                    }
-                    (*this->A_factored_ptr)(p1,p) -= buf;
-                }
-            }
-
-            // Check to make sure diagonal element is greater than zero
-            if ((*this->A_factored_ptr)(p,p) >= std::numeric_limits<value_type>::epsilon()) {
-                double diag_sqrt = std::sqrt((*this->A_factored_ptr)(p,p));
-                for (difference_type p1 = p; p1 < this->A_factored_ptr->height(); ++p1) {
-                    (*this->A_factored_ptr)(p1,p) /= diag_sqrt;
-                } 
-            } else {
-                pos_def = false;
-                return; // Must return because Cholesky decomposition does not exist
-            }
-        } 
-        
-        // Copy lower half into upperhalf
-        for (difference_type p2 = 0; p2 < this->A_factored_ptr->width() - 1; ++p2) {
-            for (difference_type p1 = p2 + 1; p1 < this->A_factored_ptr->height(); ++p1) {
-                (*this->A_factored_ptr)(p2,p1) = (*this->A_factored_ptr)(p1,p2);
-            }
-        }
-    }      
-        
-    template <typename T_container>    
-    typename CHOL_linsolver<T_container>::const_container& CHOL_linsolver<T_container>::solve(const_container &b) const {
-        if (!pos_def) {
-            throw std::invalid_argument("Attempted to solve Cholesky decomposition with a non positive definite matrix.");  
-        }
-        if ((*this->A_factored_ptr).height() != b.height() || b.width() != 1) {
-            throw std::invalid_argument("Attempted to solve Cholesky decomposition using b of size " + b.size_2D_string() + 
-                                        " on an Array of size " + (*this->A_factored_ptr).size_2D_string() + ".");  
-        }
-        
-        // LUx = b 
-        // 1) Solve Ly = b
-        // 2) Solve Ux = y
-        // Since Cholesky decomp stores factorization in lower and upper half,
-        // you can use backward_sub without transposing the matrix.
-        return this->backward_sub((*this->A_factored_ptr), this->forward_sub((*this->A_factored_ptr), b));
-    }
-}
+} // namespace details
 
 // General Functions ---------------------------------------------------------//
 template <typename T = double,typename T_alloc = std::allocator<T>>
-Array2D<T,T_alloc> eye(typename Array2D<T,T_alloc>::difference_type n, T type = T(), T_alloc = T_alloc()) {
+Array2D<T,T_alloc> eye(typename Array2D<T,T_alloc>::difference_type n, T = T(), T_alloc = T_alloc()) {
     typedef typename Array2D<T,T_alloc>::difference_type        difference_type;
     
     if (n < 0) {
@@ -4148,6 +3293,8 @@ Array2D<T,T_alloc> eye(typename Array2D<T,T_alloc>::difference_type n, T type = 
     return A;
 }
 
-}
+} // namespace ncorr
+
+#include "Array2DLinSolver.h"
 
 #endif	/* ARRAY2D_H */

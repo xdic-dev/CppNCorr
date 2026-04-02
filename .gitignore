@@ -10,3 +10,6 @@ test/examples/.DS_Store
 test/examples/ohtcfrp/.DS_Store
 .cache
 compile_commands.json
+build-test
+bin/
+.DS_Store
