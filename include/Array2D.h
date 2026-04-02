@@ -20,10 +20,6 @@
 #include <limits>
 #include <string>
 
-// Non standard libraries
-extern "C" {                    // Blas - for matrix multiplication
-    void dgemm_(char*, char*, int*, int*, int*, double*, double*, int*, double*, int*, double*, double*, int*); 
-}  
 namespace ncorr {          
 
 namespace details {       
@@ -81,6 +77,11 @@ Array2D<double, std::allocator<double>> deconv(const Array2D<double, std::alloca
                                                const Array2D<double, std::allocator<double>> &B);
 Array2D<double, std::allocator<double>> xcorr(const Array2D<double, std::allocator<double>> &A,
                                               const Array2D<double, std::allocator<double>> &B);
+
+namespace details {
+Array2D<double, std::allocator<double>> blas_mat_mult(const Array2D<double, std::allocator<double>> &A,
+                                                      const Array2D<double, std::allocator<double>> &B);
+}
 
 template <typename T, typename T_alloc = std::allocator<T>> 
 class Array2D final { 
@@ -272,16 +273,7 @@ class Array2D final {
                 
         // Linsolvers --------------------------------------------------------//
         template<typename T_output = linsolver> 
-        typename std::enable_if<std::is_floating_point<value_type>::value, T_output>::type get_linsolver(LINSOLVER linsolver_type) const { 
-            linsolver linsolve;            
-            switch (linsolver_type) {             
-                case LINSOLVER::LU : linsolve = linsolver(new details::LU_linsolver<Array2D>(*this)); break;
-                case LINSOLVER::QR : linsolve = linsolver(new details::QR_linsolver<Array2D>(*this)); break;    
-                case LINSOLVER::CHOL : linsolve = linsolver(new details::CHOL_linsolver<Array2D>(*this)); break;          
-            } 
-            
-            return linsolve;
-        }
+        typename std::enable_if<std::is_floating_point<value_type>::value, T_output>::type get_linsolver(LINSOLVER linsolver_type) const;
                 
         //--------------------------------------------------------------------//
         // Operations interface ----------------------------------------------//
@@ -2514,24 +2506,7 @@ typename std::enable_if<!std::is_same<T,double>::value, T_output>::type  Array2D
 template <typename T, typename T_alloc> 
 template <typename T_output> 
 typename std::enable_if<std::is_same<T,double>::value, T_output>::type Array2D<T,T_alloc>::this_mat_mult(const Array2D<T,T_alloc> &A) const {    
-    chk_mult_size(A);
-
-    // Note this algorithm performs C = ALPHA*A*B + BETA*C. C will be value 
-    // initialized to 0.
-    Array2D B(h, A.w);
-
-    // Call blas routine for double precision matrix-matrix multiplication -
-    // note that there might be some narrowing conversion from difference_type 
-    // to int.
-    char TRANS = 'N';
-    int M = h;
-    int N = A.w;
-    int K = w;
-    double ALPHA = 1.0;    
-    double BETA = 0.0;       
-    dgemm_(&TRANS, &TRANS, &M, &N, &K, &ALPHA, ptr, &M, A.ptr, &K, &BETA, B.ptr, &M);
-
-    return B;
+    return details::blas_mat_mult(*this, A);
 }
 
 // Additional arithmetic operations ------------------------------------------//
@@ -2558,22 +2533,6 @@ typename std::enable_if<std::is_floating_point<T>::value, T_output>::type Array2
     norm = std::sqrt(norm);
 
     return (*this) /= norm;
-}
-
-template <typename T, typename T_alloc> 
-template <typename T_output> 
-typename std::enable_if<std::is_floating_point<T>::value, T_output>::type Array2D<T,T_alloc>::this_linsolve(const Array2D &b) const {
-    // Use LU with partial pivoting for a square matrix, and QR with column 
-    // pivoting for rectangular matrices. This supports b with more than one 
-    // column; it solves one column at a time and stores a copy in x.
-    auto linsolver = ((h == w) ? get_linsolver(LINSOLVER::LU) : get_linsolver(LINSOLVER::QR));
-    
-    container x(w, b.width());
-    for (difference_type p2 = 0; p2 < b.width(); ++p2) {
-        x(all,p2) = linsolver.solve(b(all,p2));
-    }
-    
-    return x;
 }
 
 // Utility Methods -----------------------------------------------------------// 
@@ -3860,5 +3819,7 @@ Array2D<T,T_alloc> eye(typename Array2D<T,T_alloc>::difference_type n, T = T(), 
 }
 
 }
+
+#include "Array2DLinSolver.h"
 
 #endif	/* ARRAY2D_H */

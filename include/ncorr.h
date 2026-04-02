@@ -9,6 +9,7 @@
 #define	NCORR_H
 
 #include "Array2D.h"
+#include "Array2DLinSolver.h"
 #include "Array2DOpenCV.h"
 #include "Array2DFFTW.h"
 #include "Image2D.h"

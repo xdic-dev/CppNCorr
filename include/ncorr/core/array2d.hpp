@@ -2,6 +2,8 @@
 #define NCORR_CORE_ARRAY2D_HPP
 
 #include "../../Array2D.h"
+#include "../../Array2DLinSolver.h"
 #include "../../Array2DOpenCV.h"
+#include "../../Array2DFFTW.h"
 
 #endif

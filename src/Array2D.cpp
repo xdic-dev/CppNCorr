@@ -7,6 +7,10 @@
 
 #include "Array2DFFTW.h"
 
+extern "C" {
+    void dgemm_(char*, char*, int*, int*, int*, double*, double*, int*, double*, int*, double*, double*, int*);
+}
+
 namespace ncorr {
 
 namespace {
@@ -164,6 +168,25 @@ namespace details {
     // The only thread-safe routine in FFTW is fftw_execute(), so use this mutex
     // for all other routines.
     std::mutex fftw_mutex;    
+
+    Array2D<double> blas_mat_mult(const Array2D<double> &A, const Array2D<double> &B) {
+        if (A.width() != B.height()) {
+            throw std::invalid_argument("Attempted to multiply matrix of size " + A.size_2D_string() + " with " +
+                                        B.size_2D_string() + ". These sizes are incompatible for matrix multiplication.");
+        }
+
+        Array2D<double> C(A.height(), B.width());
+
+        char TRANS = 'N';
+        int M = A.height();
+        int N = B.width();
+        int K = A.width();
+        double ALPHA = 1.0;
+        double BETA = 0.0;
+        dgemm_(&TRANS, &TRANS, &M, &N, &K, &ALPHA, A.get_pointer(), &M, B.get_pointer(), &K, &BETA, C.get_pointer(), &M);
+
+        return C;
+    }
 }
 
 Array2D<double> conv(const Array2D<double> &A, const Array2D<double> &B) {
