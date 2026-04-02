@@ -25,8 +25,6 @@ extern "C" {                    // Blas - for matrix multiplication
     void dgemm_(char*, char*, int*, int*, int*, double*, double*, int*, double*, int*, double*, double*, int*); 
 }  
 #include "fftw3.h"              // For convolution and deconvolution
-#include <opencv2/core.hpp>     // For cv::Mat and cv::DataType
-#include <opencv2/highgui.hpp>  // For imshow() and waitKey()
 
 namespace ncorr {          
 
@@ -287,15 +285,13 @@ class Array2D final {
         // performance improvements. If regions are passed, they will trigger //
         // the R-value overload if one exists.                                //
         // These functions call private template member functions that use    //
-        // SFINAE to allow some operations for only some types (i.e. imshow() //
+        // SFINAE to allow some operations for only some types.               //
         // can only be called for arithmetic types).                          //
         // -------------------------------------------------------------------//
               
         // General operations ------------------------------------------------//      
         template <typename T2> 
         friend Array2D<T2, rebind_allocator<T2>> convert(const Array2D &A, const T2&) { return Array2D<T2, rebind_allocator<T2>>(A); }
-        friend cv::Mat get_cv_img(const Array2D &A, value_type min, value_type max) { return A.this_cv_img(min, max); }
-        friend void imshow(const Array2D &A, difference_type delay) { A.this_imshow(delay); }
         friend std::ostream& operator<<(std::ostream &os, const Array2D &A) { return A.this_stream(os); }      
         friend Array2D repmat(const Array2D &A, difference_type rows, difference_type cols) { return A.this_repmat(rows,cols); }    
         friend Array2D pad(const Array2D &A, difference_type padding, PAD pad_type = PAD::ZEROS) { return A.this_pad(padding,pad_type); }    
@@ -436,10 +432,6 @@ class Array2D final {
         // -------------------------------------------------------------------//
         
         // General operation -------------------------------------------------//
-        template<typename T_output = cv::Mat> 
-        typename std::enable_if<std::is_arithmetic<value_type>::value, T_output>::type this_cv_img(value_type, value_type) const;
-        template<typename T_output = void> 
-        typename std::enable_if<std::is_arithmetic<value_type>::value, T_output>::type this_imshow(difference_type) const;
         template<typename T_output = std::ostream&> 
         typename std::enable_if<std::is_arithmetic<value_type>::value, T_output>::type this_stream(std::ostream&) const;
         Array2D this_repmat(difference_type, difference_type) const; 
@@ -1996,46 +1988,6 @@ inline const T& Array2D<T,T_alloc>::operator()(difference_type p1, difference_ty
 
     return ptr[sub2ind(p1,p2)];
 }          
-
-// General operations --------------------------------------------------------//
-template <typename T, typename T_alloc> 
-template <typename T_output>
-typename std::enable_if<std::is_arithmetic<T>::value, T_output>::type Array2D<T,T_alloc>::this_cv_img(value_type min, value_type max) const {    
-    // Returns opencv style matrix in unsigned char format so it can be displayed
-    // as an image
-
-    // Convert to cv::Mat using unsigned char type
-    cv::Mat cv_img(h, w, cv::DataType<uchar>::type); 
-    double conversion = (std::abs(max - min) > std::numeric_limits<double>::epsilon()) ? std::numeric_limits<uchar>::max() / (max - min) : 0;
-    for (difference_type p2 = 0; p2 < w; ++p2) {
-        for (difference_type p1 = 0; p1 < h; ++p1) {
-            // Mat is row-major, so must convert from column major.
-            double val = ((*this)(p1,p2) - min) * conversion;
-            if (val < 0) {
-                cv_img.at<uchar>(p1,p2) = 0;
-            } else if (val > 255) {
-                cv_img.at<uchar>(p1,p2) = 255;
-            } else {
-                cv_img.at<uchar>(p1,p2) = val;
-            }
-        }
-    }   
-    
-    return cv_img;
-}
-
-// imshow is only supported for arithmetic types
-template <typename T, typename T_alloc> 
-template <typename T_output>
-typename std::enable_if<std::is_arithmetic<T>::value, T_output>::type Array2D<T,T_alloc>::this_imshow(difference_type delay) const {    
-    // opencv's imshow function doesnt work for empty arrays
-    chk_minsize_op(1,1,"imshow");
-
-    // Get cv style matrix and show it
-    cv::Mat cv_img = this_cv_img(this_min(), this_max());
-    cv::imshow("Array2D", cv_img);
-    delay == -1 ? cv::waitKey() : cv::waitKey(delay);
-}
 
 template <typename T, typename T_alloc> 
 template <typename T_output>

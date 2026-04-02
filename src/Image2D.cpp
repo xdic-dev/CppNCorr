@@ -7,6 +7,7 @@
  */
 
 #include "Image2D.h"
+#include "Array2DOpenCV.h"
 #include "ncorr/io/binary_io.hpp"
 #include <cmath>
 #include <filesystem>

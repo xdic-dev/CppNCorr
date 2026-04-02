@@ -11,6 +11,7 @@
 #include <stack>
 
 #include "Array2D.h"
+#include "Array2DOpenCV.h"
 #include "ncorr/internal/diagnostics.hpp"
 
 
