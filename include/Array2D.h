@@ -12,6 +12,7 @@
 #include <memory>
 #include <iostream>
 #include <fstream>
+#include <type_traits>
 #include <utility>
 #include <mutex>                
 #include <cmath>
@@ -100,9 +101,12 @@ class Array2D final {
         typedef details::interface_interp<details::base_interp<Array2D>>             interpolator; 
         typedef details::interface_linsolver<details::base_linsolver<Array2D>>          linsolver; 
         typedef T_alloc                                                            allocator_type;
+        typedef std::allocator_traits<allocator_type>                        allocator_traits_type;
         typedef Array2D                                                                 container;
         typedef const Array2D                                                     const_container;
-        typedef typename allocator_type::template rebind<bool>::other              bool_allocator;
+        template <typename T_other>
+        using rebind_allocator = typename allocator_traits_type::template rebind_alloc<T_other>;
+        typedef rebind_allocator<bool>                                            bool_allocator;
         typedef Array2D<bool, bool_allocator>                                      bool_container;
                                         
         template <typename T2, typename T_alloc2>
@@ -289,7 +293,7 @@ class Array2D final {
               
         // General operations ------------------------------------------------//      
         template <typename T2> 
-        friend Array2D<T2, typename allocator_type::template rebind<T2>::other> convert(const Array2D &A, const T2&) { return Array2D<T2, typename allocator_type::template rebind<T2>::other>(A); }
+        friend Array2D<T2, rebind_allocator<T2>> convert(const Array2D &A, const T2&) { return Array2D<T2, rebind_allocator<T2>>(A); }
         friend cv::Mat get_cv_img(const Array2D &A, value_type min, value_type max) { return A.this_cv_img(min, max); }
         friend void imshow(const Array2D &A, difference_type delay) { A.this_imshow(delay); }
         friend std::ostream& operator<<(std::ostream &os, const Array2D &A) { return A.this_stream(os); }      
@@ -3000,7 +3004,7 @@ template <typename T, typename T_alloc>
 typename Array2D<T,T_alloc>::pointer Array2D<T,T_alloc>::allocate(difference_type s_init) {
     pointer ptr_new;
     try {
-        ptr_new = alloc.allocate(s_init);
+        ptr_new = allocator_traits_type::allocate(alloc, s_init);
     } catch (std::bad_alloc &e) {
         // Bad alloc doesn't have a what() message, so just add one to terminal
         std::cerr << "---------------------------------------------" << std::endl 
@@ -3037,9 +3041,9 @@ void Array2D<T,T_alloc>::destroy_and_deallocate() {
     if (ptr) {
         // Must destroy objects first before deallocating memory
         for (pointer ptr_delete = ptr + s; ptr_delete != ptr; /* empty */) {
-            alloc.destroy(--ptr_delete);
+            allocator_traits_type::destroy(alloc, --ptr_delete);
         }
-        alloc.deallocate(ptr, s);
+        allocator_traits_type::deallocate(alloc, ptr, s);
     }
 }
 
@@ -3148,7 +3152,7 @@ namespace details {
     
     // Simple Iterator -------------------------------------------------------//
     template <typename T_container> 
-    inline typename simple_iterator<T_container>::simple_iterator& simple_iterator<T_container>::operator++() {    
+    inline simple_iterator<T_container>& simple_iterator<T_container>::operator++() {
         this->chk_valid_increment();
 
         ++this->p;
@@ -3157,7 +3161,7 @@ namespace details {
     }   
 
     template <typename T_container> 
-    inline typename simple_iterator<T_container>::simple_iterator& simple_iterator<T_container>::operator--() {    
+    inline simple_iterator<T_container>& simple_iterator<T_container>::operator--() {
         this->chk_valid_decrement();
 
         --this->p;
@@ -3180,7 +3184,7 @@ namespace details {
     }
     
     template <typename T_container> 
-    inline typename sub_iterator<T_container>::sub_iterator& sub_iterator<T_container>::operator++() {    
+    inline sub_iterator<T_container>& sub_iterator<T_container>::operator++() {
         this->chk_valid_increment();
 
         // increment sub_p, then determine position from it
@@ -3191,7 +3195,7 @@ namespace details {
     }   
 
     template <typename T_container> 
-    inline typename sub_iterator<T_container>::sub_iterator& sub_iterator<T_container>::operator--() {    
+    inline sub_iterator<T_container>& sub_iterator<T_container>::operator--() {
         this->chk_valid_decrement();
 
         // decrement sub_p, then determine position from it
@@ -3226,7 +3230,7 @@ namespace details {
     }  
     
     template <typename T_container> 
-    inline typename bool_iterator<T_container>::bool_iterator& bool_iterator<T_container>::operator++() {   
+    inline bool_iterator<T_container>& bool_iterator<T_container>::operator++() {
         this->chk_valid_increment();
         
         // increment p until true value is found
@@ -3239,7 +3243,7 @@ namespace details {
     }   
 
     template <typename T_container> 
-    inline typename bool_iterator<T_container>::bool_iterator& bool_iterator<T_container>::operator--() {   
+    inline bool_iterator<T_container>& bool_iterator<T_container>::operator--() {
         this->chk_valid_decrement();
 
         // decrement p until true value is found
@@ -4133,7 +4137,7 @@ namespace details {
 
 // General Functions ---------------------------------------------------------//
 template <typename T = double,typename T_alloc = std::allocator<T>>
-Array2D<T,T_alloc> eye(typename Array2D<T,T_alloc>::difference_type n, T type = T(), T_alloc = T_alloc()) {
+Array2D<T,T_alloc> eye(typename Array2D<T,T_alloc>::difference_type n, T = T(), T_alloc = T_alloc()) {
     typedef typename Array2D<T,T_alloc>::difference_type        difference_type;
     
     if (n < 0) {
