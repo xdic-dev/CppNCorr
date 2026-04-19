@@ -6,6 +6,7 @@
  */
 
 #include "ncorr.h"
+#include <cstdlib>
 #include <iostream>
 #include <omp.h>
 #include <ostream>
@@ -4997,8 +4998,27 @@ std::vector<Disp2D> matlab_run_segment_dic(const DIC_analysis_parallel_input& in
         return segment_disps;
     }
 
-    #pragma omp parallel for num_threads(std::min(num_frames, DIC_input.num_threads)) schedule(dynamic)
+    const difference_type requested_threads = std::min(num_frames, DIC_input.num_threads);
+    std::cout << "\n[matlab_run_segment_dic] Parallel dispatch:"
+              << "\n  num_frames       = " << num_frames
+              << "\n  DIC num_threads  = " << DIC_input.num_threads
+              << "\n  OMP_NUM_THREADS  = " << (std::getenv("OMP_NUM_THREADS") ? std::getenv("OMP_NUM_THREADS") : "not set")
+              << "\n  omp_get_max_threads() = " << omp_get_max_threads()
+              << "\n  Requesting       = " << requested_threads << " threads"
+              << std::endl;
+
+    #pragma omp parallel for num_threads(requested_threads) schedule(dynamic)
     for (difference_type frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
+        // Print actual thread info once per thread (first iteration each thread picks up)
+        {
+            int tid = omp_get_thread_num();
+            int nthr = omp_get_num_threads();
+            #pragma omp critical
+            {
+                std::cout << "  [segment_dic] frame " << frame_idx
+                          << " on thread " << tid << " / " << nthr << std::endl;
+            }
+        }
         segment_disps[frame_idx] = compute_frame(frame_idx);
     }
 
