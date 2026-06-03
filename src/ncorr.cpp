@@ -5044,19 +5044,18 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
     DIC_output.units = "pixels";
     DIC_output.units_per_pixel = 1.0;
 
-    std::vector<Disp2D> step_disps;
-    std::vector<ROI2D> step_rois;
-    std::vector<difference_type> step_ref_idx;
-    if (DIC_input.save_disps_steps) {
-        step_disps.resize(DIC_output.disps.size());
-        step_rois.resize(DIC_output.disps.size());
-        step_ref_idx.resize(DIC_output.disps.size());
-    }
+    // Always populate step_disps / step_rois / step_ref_idx: they are required
+    // for the post-segment chaining (multi-reference -> global reference frame 0).
+    // Their on-disk persistence remains gated by DIC_input.save_disps_steps.
+    std::vector<Disp2D> step_disps(DIC_output.disps.size());
+    std::vector<ROI2D> step_rois(DIC_output.disps.size());
+    std::vector<difference_type> step_ref_idx(DIC_output.disps.size());
 
     difference_type ref_idx = 0;
     ROI2D roi_ref = DIC_input.roi;
     std::vector<SeedParams> current_seeds = input.seeds_by_region;
     bool current_seeds_optimized = input.seeds_are_optimized;
+    int num_segments = 0;
 
     while (ref_idx < difference_type(DIC_input.imgs.size()) - 1) {
         const auto segment = matlab_compute_seed_segment(
@@ -5081,14 +5080,21 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
         ROI2D next_roi_ref;
         for (difference_type frame_idx = 0; frame_idx < difference_type(segment_disps.size()); ++frame_idx) {
             const difference_type cur_idx = ref_idx + frame_idx + 1;
+            // Provisional assignment; will be replaced by chained displacement below
+            // when more than one segment was needed (multi-reference case).
             DIC_output.disps[cur_idx - 1] = segment_disps[frame_idx];
             next_roi_ref = matlab_update_roi(roi_ref, segment_disps[frame_idx], DIC_input.interp_type, DIC_input.r);
 
-            if (DIC_input.save_disps_steps) {
-                step_disps[cur_idx - 1] = segment_disps[frame_idx];
-                step_rois[cur_idx - 1] = roi_ref;
-                step_ref_idx[cur_idx - 1] = ref_idx;
-            }
+            step_disps[cur_idx - 1] = segment_disps[frame_idx];
+            // Store the disp's OWN (reduced-grid, valid-only) ROI rather than
+            // the full-resolution input roi_ref. add_with_rois iterates points
+            // in reduced-grid coordinates (p = p_unscaled * scalefactor), so it
+            // needs ROIs at the disp's reduced grid; passing a full-res ROI
+            // makes every bounds check fail and add_with_rois returns an empty
+            // ROI -> chaining silently falls back to segment-local displacements
+            // (reproducing the pre-fix segment jump).
+            step_rois[cur_idx - 1] = segment_disps[frame_idx].get_roi();
+            step_ref_idx[cur_idx - 1] = ref_idx;
         }
 
         const difference_type segment_end_idx = ref_idx + difference_type(segment.seeds_by_frame.size());
@@ -5098,6 +5104,7 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
                       << " (" << segment.seeds_by_frame.size() << " frame(s))." << std::endl;
         }
 
+        ++num_segments;
         ref_idx = segment_end_idx;
         if (ref_idx >= difference_type(DIC_input.imgs.size()) - 1) {
             break;
@@ -5106,6 +5113,51 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
         roi_ref = next_roi_ref;
         current_seeds = segment.terminal_seeds;
         current_seeds_optimized = true;
+    }
+
+    // ---------------------------------------------------------------------
+    // Multi-reference chaining (mirrors MATLAB ncorr_alg_addanalysis).
+    // When the seed-quality check forced a reference change mid-sequence,
+    // segment_disps in segment k>1 are expressed wrt the *segment's* reference
+    // frame, not the global reference (frame 0). Each per-frame displacement
+    // therefore needs to be composed with the chain of preceding step
+    // displacements back to frame 0 via add_with_rois (B-spline composition).
+    // Without this step the .bin output exhibits a discontinuous jump in the
+    // Lagrangian field at every reference change (visible as a sudden mask /
+    // 3D-surface / strain divergence around the first segment boundary).
+    // ---------------------------------------------------------------------
+    if (num_segments > 1) {
+        if (DIC_input.debug) {
+            std::cout << "matlab_DIC_analysis: chaining " << num_segments
+                      << " segments back to global reference (frame 1)." << std::endl;
+        }
+        for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
+            // Build chain of step displacements from frame 0 to cur_idx.
+            std::vector<Disp2D> chain_disps;
+            std::vector<ROI2D> chain_rois;
+            difference_type idx = cur_idx - 1;
+            while (idx >= 0) {
+                chain_disps.insert(chain_disps.begin(), step_disps[idx]);
+                chain_rois.insert(chain_rois.begin(), step_rois[idx]);
+                if (step_ref_idx[idx] == 0) {
+                    break;
+                }
+                idx = step_ref_idx[idx] - 1;
+            }
+
+            if (chain_disps.size() <= 1) {
+                // Single segment back to frame 0, no chaining required.
+                continue;
+            }
+
+            auto combined = add_with_rois(chain_disps, chain_rois, DIC_input.interp_type);
+            if (combined.get_roi().get_points() == 0) {
+                std::cerr << "WARNING: matlab_DIC_analysis multi-ref chaining produced empty ROI at frame "
+                          << (cur_idx + 1) << "; keeping segment-local displacement." << std::endl;
+                continue;
+            }
+            DIC_output.disps[cur_idx - 1] = std::move(combined);
+        }
     }
 
     if (DIC_input.save_disps_steps && !step_disps.empty()) {
