@@ -485,6 +485,26 @@ DIC_analysis_output matlab_DIC_analysis_sequential(
 
 DIC_analysis_output matlab_DIC_analysis_sequential(const DIC_analysis_parallel_input&);
 
+// Exact MATLAB-ncorr-mirroring DIC analysis. Same seed/segment pipeline as
+// matlab_DIC_analysis_*, but the multi-reference chain composition uses
+// exact_add_with_rois(), which mirrors ncorr_alg_addanalysis + ncorr_alg_adddisp:
+//  - per-region extrapolation via expand_filt (4-neighbor mean iteration)
+//  - biquintic B-spline interpolation on the extrapolated plot
+//  - reduced-grid walk with strict in_nlinfo mask check
+// This fixes the chain-induced jump at the first segment boundary that
+// add_with_rois() exhibited (see seam diagnostics in matlab_DIC_analysis_*).
+DIC_analysis_output exact_matlab_DIC_analysis_parallel(const DIC_analysis_parallel_input&);
+DIC_analysis_output exact_matlab_DIC_analysis_sequential(
+    const DIC_analysis_input& DIC_input,
+    const std::vector<SeedParams>& seeds_by_region = {},
+    bool seeds_are_optimized = false
+);
+DIC_analysis_output exact_matlab_DIC_analysis_sequential(const DIC_analysis_parallel_input&);
+
+// MATLAB-style chain composition: extrapdata + biquintic + reduced-grid walk.
+Disp2D exact_add_with_rois(const std::vector<Disp2D>& disps,
+                           const std::vector<ROI2D>& rois);
+
 // RGDIC with user-provided seeds (single frame pair)
 Disp2D RGDIC_with_seeds(const Array2D<double>& A_ref, 
                         const Array2D<double>& A_cur, 

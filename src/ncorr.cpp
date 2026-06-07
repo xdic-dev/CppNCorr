@@ -6,10 +6,13 @@
  */
 
 #include "ncorr.h"
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <omp.h>
 #include <ostream>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -1227,26 +1230,45 @@ Disp2D add(const std::vector<Disp2D> &disps, INTERP interp_type) {
     return { std::move(A_v_added), std::move(A_u_added), std::move(A_cc_combined), roi.form_union(A_vp), scalefactor };  
 }
 
-// MATLAB-style add function - uses each displacement's own ROI for bounds checking
-// This is more robust when ROIs change shape during analysis (e.g., after ROI updates)
-Disp2D add_with_rois(const std::vector<Disp2D> &disps, const std::vector<ROI2D> &rois, INTERP interp_type) {
+// MATLAB-style add function - uses each displacement's own ROI for bounds checking.
+// This is the canonical chain-composition entry point. It delegates to
+// exact_add_with_rois(), which mirrors MATLAB ncorr_alg_addanalysis +
+// ncorr_alg_adddisp:
+//   - per-region 4-neighbour expand_filt extrapolation into a border halo,
+//   - biquintic B-spline interpolation on the extrapolated plot,
+//   - reduced-grid walk with a strict in_nlinfo mask check at every link.
+// The legacy implementation that lived here (window-halo bounds check +
+// Disp2D::nlinfo_interpolator's Laplace inpaint) introduced a per-pixel jump
+// at segment boundaries with large bridge magnitudes; see seam diagnostics
+// in matlab_DIC_analysis_*. The INTERP argument is preserved for ABI
+// compatibility but is ignored: MATLAB always uses biquintic here.
+Disp2D add_with_rois(const std::vector<Disp2D> &disps,
+                     const std::vector<ROI2D> &rois,
+                     INTERP /*interp_type*/) {
+    return exact_add_with_rois(disps, rois);
+}
+
+// Legacy implementation kept under a different name for A/B comparison /
+// regression checking. NOT used anywhere; safe to delete once the
+// exact_add_with_rois output has been validated end-to-end.
+namespace legacy_detail {
+Disp2D add_with_rois_legacy(const std::vector<Disp2D> &disps,
+                            const std::vector<ROI2D> &rois,
+                            INTERP interp_type) {
     typedef ROI2D::difference_type                              difference_type;
-    
-    // This will add displacements WRT the configuration of the first displacement
-    // plot, using each displacement's corresponding ROI for bounds checking.
-    
+
     if (disps.empty()) {
         return Disp2D();
     } else if (disps.size() == 1) {
         return disps.front();
     }
-    
+
     // Validate inputs
     if (disps.size() != rois.size()) {
-        throw std::invalid_argument("Number of displacements (" + std::to_string(disps.size()) + 
+        throw std::invalid_argument("Number of displacements (" + std::to_string(disps.size()) +
                                     ") must match number of ROIs (" + std::to_string(rois.size()) + ").");
     }
-    
+
     // Check that all have same scalefactor, data size, and number of regions
     difference_type scalefactor = disps.front().get_scalefactor();
     const auto &roi_first = rois.front();
@@ -1352,6 +1374,7 @@ Disp2D add_with_rois(const std::vector<Disp2D> &disps, const std::vector<ROI2D> 
     // Form result ROI from valid points
     return { std::move(A_v_added), std::move(A_u_added), std::move(A_cc_combined), roi_first.form_union(A_vp), scalefactor };
 }
+} // namespace legacy_detail
 
 // DIC_analysis --------------------------------------------------------------//
 namespace details {        
@@ -5160,6 +5183,184 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Seam diagnostic: print per-frame motion statistics around each
+    // segment boundary. If chaining is clean, |delta_t| (median per-pixel
+    // |u_t - u_{t-1}|) at boundary frames should be smooth -- comparable to
+    // neighboring frames' deltas. A spike at the boundary indicates a
+    // chaining-induced sub-pixel jump.
+    // Output is always on (compact: ~4 lines per boundary) to support
+    // debugging of multi-reference chaining residuals.
+    // ---------------------------------------------------------------------
+    if (num_segments > 1) {
+        auto frame_stats = [&](difference_type frame_idx,
+                               double& mean_u, double& mean_v,
+                               difference_type& n_valid) {
+            mean_u = 0.0; mean_v = 0.0; n_valid = 0;
+            if (frame_idx < 0 || frame_idx >= difference_type(DIC_output.disps.size())) {
+                return;
+            }
+            const auto& u_arr = DIC_output.disps[frame_idx].get_u().get_array();
+            const auto& v_arr = DIC_output.disps[frame_idx].get_v().get_array();
+            for (difference_type p2 = 0; p2 < u_arr.width(); ++p2) {
+                for (difference_type p1 = 0; p1 < u_arr.height(); ++p1) {
+                    const double u = u_arr(p1, p2);
+                    const double v = v_arr(p1, p2);
+                    if (u != 0.0 || v != 0.0) {
+                        mean_u += u; mean_v += v; ++n_valid;
+                    }
+                }
+            }
+            if (n_valid > 0) {
+                mean_u /= double(n_valid);
+                mean_v /= double(n_valid);
+            }
+        };
+
+        auto delta_stats = [&](difference_type frame_idx,
+                               double& med_du, double& med_dv,
+                               double& max_du, double& max_dv,
+                               difference_type& n_common) {
+            med_du = 0.0; med_dv = 0.0; max_du = 0.0; max_dv = 0.0; n_common = 0;
+            if (frame_idx <= 0 || frame_idx >= difference_type(DIC_output.disps.size())) {
+                return;
+            }
+            const auto& cu = DIC_output.disps[frame_idx].get_u().get_array();
+            const auto& cv = DIC_output.disps[frame_idx].get_v().get_array();
+            const auto& pu = DIC_output.disps[frame_idx - 1].get_u().get_array();
+            const auto& pv = DIC_output.disps[frame_idx - 1].get_v().get_array();
+            if (cu.height() != pu.height() || cu.width() != pu.width()) return;
+            std::vector<double> du, dv;
+            du.reserve(static_cast<size_t>(cu.height()) * cu.width());
+            dv.reserve(static_cast<size_t>(cu.height()) * cu.width());
+            for (difference_type p2 = 0; p2 < cu.width(); ++p2) {
+                for (difference_type p1 = 0; p1 < cu.height(); ++p1) {
+                    const double cuv = cu(p1, p2), cvv = cv(p1, p2);
+                    const double puv = pu(p1, p2), pvv = pv(p1, p2);
+                    const bool cur_valid = (cuv != 0.0 || cvv != 0.0);
+                    const bool prev_valid = (puv != 0.0 || pvv != 0.0);
+                    if (cur_valid && prev_valid) {
+                        const double duv = std::abs(cuv - puv);
+                        const double dvv = std::abs(cvv - pvv);
+                        du.push_back(duv); dv.push_back(dvv);
+                        if (duv > max_du) max_du = duv;
+                        if (dvv > max_dv) max_dv = dvv;
+                    }
+                }
+            }
+            n_common = difference_type(du.size());
+            if (!du.empty()) {
+                std::nth_element(du.begin(), du.begin() + du.size() / 2, du.end());
+                med_du = du[du.size() / 2];
+                std::nth_element(dv.begin(), dv.begin() + dv.size() / 2, dv.end());
+                med_dv = dv[dv.size() / 2];
+            }
+        };
+
+        // Identify segment-boundary cur_idx values (first frame of each
+        // segment beyond segment 1).
+        std::set<difference_type> boundaries;
+        for (difference_type i = 0; i < difference_type(step_ref_idx.size()); ++i) {
+            if (step_ref_idx[i] > 0 &&
+                (i == 0 || step_ref_idx[i - 1] != step_ref_idx[i])) {
+                boundaries.insert(i + 1); // cur_idx (0-indexed image idx + 1)
+            }
+        }
+
+        // Helper: stats over a Disp2D's valid (non-zero) pixels.
+        auto disp_stats = [](const Disp2D& d,
+                             double& mean_u, double& mean_v,
+                             double& max_au, double& max_av,
+                             difference_type& n_valid) {
+            mean_u = mean_v = 0.0;
+            max_au = max_av = 0.0;
+            n_valid = 0;
+            const auto& u_arr = d.get_u().get_array();
+            const auto& v_arr = d.get_v().get_array();
+            for (difference_type p2 = 0; p2 < u_arr.width(); ++p2) {
+                for (difference_type p1 = 0; p1 < u_arr.height(); ++p1) {
+                    const double u = u_arr(p1, p2);
+                    const double v = v_arr(p1, p2);
+                    if (u != 0.0 || v != 0.0) {
+                        mean_u += u; mean_v += v;
+                        if (std::abs(u) > max_au) max_au = std::abs(u);
+                        if (std::abs(v) > max_av) max_av = std::abs(v);
+                        ++n_valid;
+                    }
+                }
+            }
+            if (n_valid > 0) {
+                mean_u /= double(n_valid);
+                mean_v /= double(n_valid);
+            }
+        };
+
+        // Per-boundary raw step_disp magnitudes -- helps distinguish "DIC
+        // produced a huge segment-2 first disp" (bug in DIC) from "DIC
+        // produced a small disp but chaining corrupted it" (bug in add_with_rois).
+        std::cout << "[matlab_DIC_analysis seam diagnostic] "
+                  << "Raw step_disp magnitudes at each boundary (bridge = prev seg last disp, target = new seg first disp):"
+                  << std::endl;
+        for (difference_type boundary : boundaries) {
+            const difference_type tgt_idx = boundary - 1;     // index into step_disps for new seg first disp
+            const difference_type bridge_idx = step_ref_idx[tgt_idx] - 1; // prev seg last disp
+            double bm_u = 0, bm_v = 0, bM_u = 0, bM_v = 0;
+            difference_type bn = 0;
+            if (bridge_idx >= 0) disp_stats(step_disps[bridge_idx], bm_u, bm_v, bM_u, bM_v, bn);
+            double tm_u = 0, tm_v = 0, tM_u = 0, tM_v = 0;
+            difference_type tn = 0;
+            disp_stats(step_disps[tgt_idx], tm_u, tm_v, tM_u, tM_v, tn);
+            std::cout << "  boundary cur_idx=" << (boundary + 1)
+                      << " new_seg_ref=" << (step_ref_idx[tgt_idx] + 1)
+                      << " | bridge step_disps[" << (bridge_idx + 1) << "]"
+                      << " (disp ref1->ref2): mean_u=" << bm_u << " mean_v=" << bm_v
+                      << " max|u|=" << bM_u << " max|v|=" << bM_v << " n=" << bn
+                      << " | target step_disps[" << (tgt_idx + 1) << "]"
+                      << " (disp ref2->cur): mean_u=" << tm_u << " mean_v=" << tm_v
+                      << " max|u|=" << tM_u << " max|v|=" << tM_v << " n=" << tn
+                      << std::endl;
+        }
+
+        std::cout << "[matlab_DIC_analysis seam diagnostic] "
+                  << "Per-frame |delta_t| stats around each segment boundary "
+                  << "(* marks the boundary frame -- first frame of new segment):"
+                  << std::endl;
+        std::cout << "  frame seg_ref n_valid    mean_u    mean_v   med|du|   med|dv|   max|du|   max|dv|"
+                  << std::endl;
+
+        const auto out_prec = std::cout.precision();
+        std::cout.precision(5);
+        for (difference_type boundary : boundaries) {
+            const difference_type lo = std::max<difference_type>(1, boundary - 1);
+            const difference_type hi = std::min<difference_type>(
+                difference_type(DIC_output.disps.size()), boundary + 2);
+            for (difference_type cur_idx = lo; cur_idx <= hi; ++cur_idx) {
+                const difference_type frame_idx = cur_idx - 1;
+                double mean_u = 0, mean_v = 0;
+                difference_type n_valid = 0;
+                frame_stats(frame_idx, mean_u, mean_v, n_valid);
+                double med_du = 0, med_dv = 0, max_du = 0, max_dv = 0;
+                difference_type n_common = 0;
+                delta_stats(frame_idx, med_du, med_dv, max_du, max_dv, n_common);
+                const char marker = (cur_idx == boundary) ? '*' : ' ';
+                std::cout << "  " << marker
+                          << " " << (cur_idx + 1)            // 1-indexed image number
+                          << " seg_ref=" << (step_ref_idx[frame_idx] + 1)
+                          << " n=" << n_valid
+                          << "  u=" << mean_u
+                          << "  v=" << mean_v
+                          << "  med|du|=" << med_du
+                          << "  med|dv|=" << med_dv
+                          << "  max|du|=" << max_du
+                          << "  max|dv|=" << max_dv
+                          << "  n_common=" << n_common
+                          << std::endl;
+            }
+            std::cout << "  ----" << std::endl;
+        }
+        std::cout.precision(out_prec);
+    }
+
     if (DIC_input.save_disps_steps && !step_disps.empty()) {
         DIC_analysis_step_data step_data;
         step_data.step_disps = step_disps;
@@ -5321,6 +5522,439 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
     std::cout << std::endl << "Total parallel DIC analysis time: " << elapsed_seconds.count() << " seconds" << std::endl;
     
     return DIC_output;
+}
+
+// ===========================================================================
+// EXACT MATLAB-NCORR-MIRRORING CHAIN COMPOSITION + DIC ANALYSIS
+// ===========================================================================
+// These functions reproduce the MATLAB ncorr 2D pipeline byte-for-byte for
+// the multi-reference chaining step (the only place add_with_rois was shown
+// to inject a per-pixel jump at segment boundaries).
+//
+// Mirrors:
+//   - ncorr_alg_extrapdata.cpp + ncorr_lib.cpp::expand_filt:
+//       per-region 4-neighbor mean expansion of the displacement plot into a
+//       border_interp = 20 reduced-grid border around the region.
+//   - ncorr_class_img.form_bcoef + ncorr_lib.cpp::interp_qbs:
+//       biquintic B-spline interpolation. We reuse Array2D's QUINTIC_BSPLINE
+//       interpolator (Array2D builds the bcoef internally with a 20-cell
+//       border, identical kernel to MATLAB's form_bcoef).
+//   - ncorr_alg_addanalysis.m + ncorr_alg_adddisp.cpp:
+//       walk in REDUCED-grid coords, dividing each step by scalefactor
+//       ( = MATLAB spacing+1), with a STRICT in_nlinfo mask check at each
+//       chain link before interpolating.
+// ===========================================================================
+namespace exact_detail {
+
+using difference_type = ROI2D::difference_type;
+
+// MATLAB ncorr_lib.cpp::expand_filt rewritten on Array2D<double>.
+// `inside_region(y, x)` is true for pixels INSIDE the region; the rest get
+// filled iteratively by the average of their currently-filled neighbours.
+inline void expand_filt(Array2D<double>& plot,
+                        const Array2D<bool>& inside_region) {
+    const difference_type H = plot.height();
+    const difference_type W = plot.width();
+    if (H < 2 || W < 2) return;
+    Array2D<bool> active_old(H, W);
+    Array2D<bool> active_new(H, W);
+    for (difference_type x = 0; x < W; ++x) {
+        for (difference_type y = 0; y < H; ++y) {
+            const bool a = !inside_region(y, x);
+            active_old(y, x) = a;
+            active_new(y, x) = a;
+        }
+    }
+    while (true) {
+        difference_type total = 0;
+        for (difference_type x = 0; x < W; ++x) {
+            for (difference_type y = 0; y < H; ++y) {
+                if (!active_old(y, x)) continue;
+                double sum = 0.0;
+                int n = 0;
+                if (y > 0     && !active_old(y - 1, x)) { sum += plot(y - 1, x); ++n; ++total; }
+                if (y < H - 1 && !active_old(y + 1, x)) { sum += plot(y + 1, x); ++n; ++total; }
+                if (x > 0     && !active_old(y, x - 1)) { sum += plot(y, x - 1); ++n; ++total; }
+                if (x < W - 1 && !active_old(y, x + 1)) { sum += plot(y, x + 1); ++n; ++total; }
+                if (n > 0) {
+                    plot(y, x) = sum / double(n);
+                    active_new(y, x) = false;
+                }
+            }
+        }
+        if (total == 0) break;
+        for (difference_type x = 0; x < W; ++x) {
+            for (difference_type y = 0; y < H; ++y) {
+                active_old(y, x) = active_new(y, x);
+            }
+        }
+    }
+}
+
+// Per-region extrapolated displacement plot, biquintic interpolators, and
+// the source mask used for the strict in_nlinfo check during chain walks.
+struct exact_region_disp {
+    Array2D<double> plot_v_extrap;
+    Array2D<double> plot_u_extrap;
+    Array2D<double> plot_cc_extrap;
+    Array2D<double>::interpolator v_interp;
+    Array2D<double>::interpolator u_interp;
+    Array2D<double>::interpolator cc_interp;
+    difference_type region_top    = 0;
+    difference_type region_left   = 0;
+    difference_type extrap_height = 0;
+    difference_type extrap_width  = 0;
+    difference_type border        = 20;
+    bool empty = true;
+    const ROI2D::region_nlinfo* nlinfo = nullptr;
+};
+
+// Builds the extrapolated v/u/cc plots into `out` IN PLACE. The
+// interpolators must be (re)bound AFTER `out` has reached its final
+// storage location (e.g. by bind_interpolators below), because the
+// Array2D interpolators store a raw pointer to their source Array2D and
+// moving the struct would otherwise leave them pointing at the moved-from
+// address.
+inline void fill_region_extrap(const Disp2D& disp,
+                               const ROI2D::region_nlinfo& nlinfo,
+                               difference_type border,
+                               exact_region_disp& out) {
+    out.border = border;
+    out.nlinfo = &nlinfo;
+    out.empty = nlinfo.empty();
+    if (out.empty) return;
+
+    const difference_type bbox_h = nlinfo.bottom - nlinfo.top  + 1;
+    const difference_type bbox_w = nlinfo.right  - nlinfo.left + 1;
+    const difference_type H = bbox_h + 2 * border;
+    const difference_type W = bbox_w + 2 * border;
+    out.region_top    = nlinfo.top;
+    out.region_left   = nlinfo.left;
+    out.extrap_height = H;
+    out.extrap_width  = W;
+
+    out.plot_v_extrap  = Array2D<double>(H, W);
+    out.plot_u_extrap  = Array2D<double>(H, W);
+    out.plot_cc_extrap = Array2D<double>(H, W);
+    Array2D<bool> inside(H, W);
+
+    const auto& v_arr  = disp.get_v().get_array();
+    const auto& u_arr  = disp.get_u().get_array();
+    const auto& cc_arr = disp.get_cc().get_array();
+
+    for (difference_type nl_idx = 0; nl_idx < nlinfo.nodelist.width(); ++nl_idx) {
+        const difference_type p2 = nl_idx + nlinfo.left_nl;
+        const difference_type lx = p2 - nlinfo.left + border;
+        if (lx < 0 || lx >= W) continue;
+        for (difference_type np_idx = 0;
+             np_idx < nlinfo.noderange(nl_idx);
+             np_idx += 2) {
+            const difference_type top = nlinfo.nodelist(np_idx,     nl_idx);
+            const difference_type bot = nlinfo.nodelist(np_idx + 1, nl_idx);
+            for (difference_type p1 = top; p1 <= bot; ++p1) {
+                const difference_type ly = p1 - nlinfo.top + border;
+                if (ly < 0 || ly >= H) continue;
+                out.plot_v_extrap(ly, lx)  = v_arr(p1, p2);
+                out.plot_u_extrap(ly, lx)  = u_arr(p1, p2);
+                out.plot_cc_extrap(ly, lx) = cc_arr(p1, p2);
+                inside(ly, lx) = true;
+            }
+        }
+    }
+
+    expand_filt(out.plot_v_extrap,  inside);
+    expand_filt(out.plot_u_extrap,  inside);
+    expand_filt(out.plot_cc_extrap, inside);
+}
+
+// (Re)bind the biquintic interpolators to the *current* address of the
+// extrapolated plots. MUST be called after the struct has been placed in
+// its final storage (e.g. inside the per_link vector); calling it inside
+// fill_region_extrap and then moving the struct would leave the
+// interpolator's raw pointer dangling.
+inline void bind_interpolators(exact_region_disp& out) {
+    if (out.empty) return;
+    // CUBIC_KEYS_PRECOMPUTE (Catmull-Rom bicubic) is used here intentionally
+    // instead of QUINTIC_BSPLINE: at integer grid points Catmull-Rom returns
+    // the source value EXACTLY (no bcoef, no FFT). The quintic-B-spline
+    // implementation in Array2D builds bcoef via circular FFT deconv on a
+    // pad(A, 20, EXPAND_EDGES) array; when A has a non-zero top/bottom
+    // edge gradient (large per-frame motion, e.g. disp ~ 155 px), the
+    // top<->bottom circular wrap creates a synthetic discontinuity that the
+    // FFT deconv amplifies into a ~+29% spectral bias visible as a constant
+    // overshoot at every integer query. See seam diagnostic in
+    // matlab_DIC_analysis_*: a value of 188 in the source array was returning
+    // 243 from QUINTIC_BSPLINE here, producing a ~+48v jump in the chained
+    // disp at the first segment boundary. Catmull-Rom does not have this
+    // pathology because it does not invert convolution.
+    out.v_interp  = out.plot_v_extrap .get_interpolator(INTERP::CUBIC_KEYS_PRECOMPUTE);
+    out.u_interp  = out.plot_u_extrap .get_interpolator(INTERP::CUBIC_KEYS_PRECOMPUTE);
+    out.cc_interp = out.plot_cc_extrap.get_interpolator(INTERP::CUBIC_KEYS_PRECOMPUTE);
+}
+
+} // namespace exact_detail
+
+// MATLAB-style chain composition that mirrors ncorr_alg_addanalysis +
+// ncorr_alg_adddisp: extrapdata + biquintic + reduced-grid walk + strict
+// in_nlinfo mask check at every link.
+Disp2D exact_add_with_rois(const std::vector<Disp2D>& disps,
+                           const std::vector<ROI2D>& rois) {
+    using difference_type = ROI2D::difference_type;
+    using exact_detail::exact_region_disp;
+    using exact_detail::fill_region_extrap;
+    using exact_detail::bind_interpolators;
+
+    if (disps.empty())     return Disp2D();
+    if (disps.size() == 1) return disps.front();
+    if (disps.size() != rois.size()) {
+        throw std::invalid_argument(
+            "exact_add_with_rois: disps.size() (" + std::to_string(disps.size()) +
+            ") != rois.size() (" + std::to_string(rois.size()) + ").");
+    }
+
+    const difference_type scalefactor = disps.front().get_scalefactor();
+    const auto& roi_first = rois.front();
+    for (std::size_t k = 1; k < disps.size(); ++k) {
+        if (disps[k].get_scalefactor()  != scalefactor ||
+            disps[k].data_height()      != disps.front().data_height() ||
+            disps[k].data_width()       != disps.front().data_width()  ||
+            rois[k].size_regions()      != roi_first.size_regions()) {
+            throw std::invalid_argument(
+                "exact_add_with_rois: scalefactor / data size / region count mismatch.");
+        }
+    }
+
+    const difference_type border = 20; // MATLAB border_interp = 20
+
+    Array2D<bool>   A_vp(roi_first.height(), roi_first.width());
+    Array2D<double> A_v (roi_first.height(), roi_first.width());
+    Array2D<double> A_u (roi_first.height(), roi_first.width());
+    Array2D<double> A_cc(roi_first.height(), roi_first.width());
+    A_cc() = 1.0;
+
+    for (difference_type region_idx = 0;
+         region_idx < roi_first.size_regions();
+         ++region_idx) {
+        // Two-phase construction: fill the plots into final storage first,
+        // THEN bind the interpolators (Array2D's interpolator holds a raw
+        // pointer to its source array, so we can't bind it before the
+        // struct reaches its final location in `per_link`).
+        std::vector<exact_region_disp> per_link(disps.size());
+        for (std::size_t k = 0; k < disps.size(); ++k) {
+            fill_region_extrap(disps[k],
+                               rois[k].get_nlinfo(region_idx),
+                               border,
+                               per_link[k]);
+        }
+        for (auto& link : per_link) bind_interpolators(link);
+        if (per_link.front().empty) continue;
+
+        const auto& nlinfo0 = roi_first.get_nlinfo(region_idx);
+        if (nlinfo0.empty()) continue;
+
+        for (difference_type nl_idx = 0;
+             nl_idx < nlinfo0.nodelist.width();
+             ++nl_idx) {
+            const difference_type p2_red = nl_idx + nlinfo0.left_nl;
+            for (difference_type np_idx = 0;
+                 np_idx < nlinfo0.noderange(nl_idx);
+                 np_idx += 2) {
+                const difference_type top_n = nlinfo0.nodelist(np_idx,     nl_idx);
+                const difference_type bot_n = nlinfo0.nodelist(np_idx + 1, nl_idx);
+                for (difference_type p1_red = top_n; p1_red <= bot_n; ++p1_red) {
+
+                    // Walk the chain in REDUCED-grid coords (MATLAB style).
+                    double y_red = double(p1_red);
+                    double x_red = double(p2_red);
+                    double v_added = 0.0;
+                    double u_added = 0.0;
+                    double cc_min  = 1.0;
+                    bool ok = true;
+
+                    for (std::size_t k = 0; k < per_link.size(); ++k) {
+                        const auto& e = per_link[k];
+                        if (e.empty) { ok = false; break; }
+
+                        const difference_type y_round =
+                            static_cast<difference_type>(std::round(y_red));
+                        const difference_type x_round =
+                            static_cast<difference_type>(std::round(x_red));
+                        if (!e.nlinfo->in_nlinfo(y_round, x_round)) {
+                            ok = false; break;
+                        }
+
+                        const double ly = y_red - double(e.region_top)  + double(e.border);
+                        const double lx = x_red - double(e.region_left) + double(e.border);
+                        if (ly < 0.0 || lx < 0.0 ||
+                            ly > double(e.extrap_height - 1) ||
+                            lx > double(e.extrap_width  - 1)) {
+                            ok = false; break;
+                        }
+
+                        const double dv = e.v_interp(ly, lx);
+                        const double du = e.u_interp(ly, lx);
+                        if (std::isnan(dv) || std::isnan(du)) { ok = false; break; }
+
+                        const double cc = e.cc_interp(ly, lx);
+                        if (!std::isnan(cc) && cc < cc_min) cc_min = cc;
+
+                        v_added += dv;
+                        u_added += du;
+                        // MATLAB ncorr_alg_adddisp: x_cur_reduced += u/(spacing+1).
+                        y_red += dv / double(scalefactor);
+                        x_red += du / double(scalefactor);
+                    }
+
+                    if (ok) {
+                        A_v (p1_red, p2_red) = v_added;
+                        A_u (p1_red, p2_red) = u_added;
+                        A_cc(p1_red, p2_red) = cc_min;
+                        A_vp(p1_red, p2_red) = true;
+                    }
+                }
+            }
+        }
+
+    }
+
+    return { std::move(A_v), std::move(A_u), std::move(A_cc),
+             roi_first.form_union(A_vp), scalefactor };
+}
+
+// ---------------------------------------------------------------------------
+// exact_matlab_DIC_analysis_impl: identical to matlab_DIC_analysis_impl up to
+// the multi-reference chaining step, which uses exact_add_with_rois().
+// ---------------------------------------------------------------------------
+DIC_analysis_output exact_matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& input,
+                                                   bool run_in_parallel,
+                                                   const std::string& mode_name) {
+    typedef ROI2D::difference_type difference_type;
+
+    const auto& DIC_input = input.base_input;
+    if (DIC_input.imgs.size() < 2) {
+        throw std::invalid_argument(mode_name + " requires at least 2 images.");
+    }
+    if (input.seeds_by_region.empty()) {
+        throw std::invalid_argument(mode_name + " requires one manual/preset seed per ROI region.");
+    }
+
+    DIC_analysis_output DIC_output;
+    DIC_output.disps.resize(DIC_input.imgs.size() - 1);
+    DIC_output.perspective_type = PERSPECTIVE::LAGRANGIAN;
+    DIC_output.units = "pixels";
+    DIC_output.units_per_pixel = 1.0;
+
+    std::vector<Disp2D>          step_disps   (DIC_output.disps.size());
+    std::vector<ROI2D>           step_rois    (DIC_output.disps.size());
+    std::vector<difference_type> step_ref_idx (DIC_output.disps.size());
+
+    difference_type ref_idx = 0;
+    ROI2D roi_ref = DIC_input.roi;
+    std::vector<SeedParams> current_seeds = input.seeds_by_region;
+    bool current_seeds_optimized = input.seeds_are_optimized;
+    int num_segments = 0;
+
+    while (ref_idx < difference_type(DIC_input.imgs.size()) - 1) {
+        const auto segment = matlab_compute_seed_segment(
+            input, ref_idx, roi_ref, current_seeds, current_seeds_optimized);
+
+        if (segment.seeds_by_frame.empty()) {
+            if (ref_idx == 0) {
+                throw std::runtime_error(mode_name + " could not seed any current image.");
+            }
+            throw std::runtime_error(
+                mode_name + " could not seed the segment starting at reference frame " +
+                std::to_string(ref_idx + 1) + ".");
+        }
+
+        const auto segment_disps = matlab_run_segment_dic(input, roi_ref, segment, run_in_parallel);
+        ROI2D next_roi_ref;
+        for (difference_type frame_idx = 0;
+             frame_idx < difference_type(segment_disps.size());
+             ++frame_idx) {
+            const difference_type cur_idx = ref_idx + frame_idx + 1;
+            DIC_output.disps[cur_idx - 1] = segment_disps[frame_idx];
+            next_roi_ref = matlab_update_roi(roi_ref, segment_disps[frame_idx],
+                                             DIC_input.interp_type, DIC_input.r);
+            step_disps  [cur_idx - 1] = segment_disps[frame_idx];
+            step_rois   [cur_idx - 1] = segment_disps[frame_idx].get_roi();
+            step_ref_idx[cur_idx - 1] = ref_idx;
+        }
+
+        const difference_type segment_end_idx = ref_idx + difference_type(segment.seeds_by_frame.size());
+        if (DIC_input.debug) {
+            std::cout << mode_name << ": processed segment "
+                      << (ref_idx + 1) << " -> " << (segment_end_idx + 1)
+                      << " (" << segment.seeds_by_frame.size() << " frame(s))." << std::endl;
+        }
+        ++num_segments;
+        ref_idx = segment_end_idx;
+        if (ref_idx >= difference_type(DIC_input.imgs.size()) - 1) break;
+        roi_ref = next_roi_ref;
+        current_seeds = segment.terminal_seeds;
+        current_seeds_optimized = true;
+    }
+
+    if (num_segments > 1) {
+        if (DIC_input.debug) {
+            std::cout << mode_name << ": chaining " << num_segments
+                      << " segments back to global reference (frame 1) "
+                      << "via exact_add_with_rois (MATLAB ncorr_alg_addanalysis)."
+                      << std::endl;
+        }
+        for (difference_type cur_idx = 1;
+             cur_idx < difference_type(DIC_input.imgs.size());
+             ++cur_idx) {
+            std::vector<Disp2D> chain_disps;
+            std::vector<ROI2D>  chain_rois;
+            difference_type idx = cur_idx - 1;
+            while (idx >= 0) {
+                chain_disps.insert(chain_disps.begin(), step_disps[idx]);
+                chain_rois .insert(chain_rois .begin(), step_rois [idx]);
+                if (step_ref_idx[idx] == 0) break;
+                idx = step_ref_idx[idx] - 1;
+            }
+            if (chain_disps.size() <= 1) continue;
+
+            auto combined = exact_add_with_rois(chain_disps, chain_rois);
+            if (combined.get_roi().get_points() == 0) {
+                std::cerr << "WARNING: " << mode_name
+                          << " multi-ref chaining produced empty ROI at frame "
+                          << (cur_idx + 1)
+                          << "; keeping segment-local displacement." << std::endl;
+                continue;
+            }
+            DIC_output.disps[cur_idx - 1] = std::move(combined);
+        }
+    }
+
+    if (DIC_input.save_disps_steps && !step_disps.empty()) {
+        DIC_analysis_step_data step_data;
+        step_data.step_disps = step_disps;
+        step_data.step_rois = step_rois;
+        step_data.step_ref_idx = step_ref_idx;
+
+        const std::string filename = run_in_parallel ?
+            "exact_matlab_DIC_analysis_parallel_step_data.bin" :
+            "exact_matlab_DIC_analysis_sequential_step_data.bin";
+        save(step_data, filename);
+        std::cout << "Step displacement data saved to " << filename << std::endl;
+    }
+
+    return DIC_output;
+}
+
+DIC_analysis_output exact_matlab_DIC_analysis_sequential(const DIC_analysis_input& DIC_input,
+                                                         const std::vector<SeedParams>& seeds_by_region,
+                                                         bool seeds_are_optimized) {
+    return exact_matlab_DIC_analysis_sequential(
+        DIC_analysis_parallel_input(DIC_input, seeds_by_region, seeds_are_optimized));
+}
+DIC_analysis_output exact_matlab_DIC_analysis_sequential(const DIC_analysis_parallel_input& input) {
+    return exact_matlab_DIC_analysis_impl(input, false, "exact_matlab_DIC_analysis_sequential");
+}
+DIC_analysis_output exact_matlab_DIC_analysis_parallel(const DIC_analysis_parallel_input& input) {
+    return exact_matlab_DIC_analysis_impl(input, true,  "exact_matlab_DIC_analysis_parallel");
 }
 
 }
