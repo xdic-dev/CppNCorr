@@ -4050,7 +4050,17 @@ namespace details {
                 
         if (enable_scalebar) {   
             // Set scalebar dimensions
-            difference_type scalebar_width = num_units == -1 ? data.data_width()/2 : num_units/units_per_pixel/data.get_scalefactor();
+            // Both ternary branches resolve to difference_type. The second
+            // branch performs the divisions in floating-point (because
+            // units_per_pixel is double) and truncates at the final cast,
+            // matching the assignment's target type.
+            difference_type scalebar_width =
+                (num_units == -1)
+                    ? (data.data_width() / 2)
+                    : static_cast<difference_type>(
+                          static_cast<double>(num_units) /
+                          units_per_pixel /
+                          static_cast<double>(data.get_scalefactor()));
             difference_type scalebar_height = 5;
             
             // Set num_units if it isn't -1
@@ -5184,182 +5194,10 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
     }
 
     // ---------------------------------------------------------------------
-    // Seam diagnostic: print per-frame motion statistics around each
-    // segment boundary. If chaining is clean, |delta_t| (median per-pixel
-    // |u_t - u_{t-1}|) at boundary frames should be smooth -- comparable to
-    // neighboring frames' deltas. A spike at the boundary indicates a
-    // chaining-induced sub-pixel jump.
-    // Output is always on (compact: ~4 lines per boundary) to support
-    // debugging of multi-reference chaining residuals.
+    // (Seam diagnostic previously inlined here has been moved to
+    // test/src/ncorr_test_chain_seam.cpp as a focused regression test for
+    // exact_add_with_rois + Array2D::quintic_interp.)
     // ---------------------------------------------------------------------
-    if (num_segments > 1) {
-        auto frame_stats = [&](difference_type frame_idx,
-                               double& mean_u, double& mean_v,
-                               difference_type& n_valid) {
-            mean_u = 0.0; mean_v = 0.0; n_valid = 0;
-            if (frame_idx < 0 || frame_idx >= difference_type(DIC_output.disps.size())) {
-                return;
-            }
-            const auto& u_arr = DIC_output.disps[frame_idx].get_u().get_array();
-            const auto& v_arr = DIC_output.disps[frame_idx].get_v().get_array();
-            for (difference_type p2 = 0; p2 < u_arr.width(); ++p2) {
-                for (difference_type p1 = 0; p1 < u_arr.height(); ++p1) {
-                    const double u = u_arr(p1, p2);
-                    const double v = v_arr(p1, p2);
-                    if (u != 0.0 || v != 0.0) {
-                        mean_u += u; mean_v += v; ++n_valid;
-                    }
-                }
-            }
-            if (n_valid > 0) {
-                mean_u /= double(n_valid);
-                mean_v /= double(n_valid);
-            }
-        };
-
-        auto delta_stats = [&](difference_type frame_idx,
-                               double& med_du, double& med_dv,
-                               double& max_du, double& max_dv,
-                               difference_type& n_common) {
-            med_du = 0.0; med_dv = 0.0; max_du = 0.0; max_dv = 0.0; n_common = 0;
-            if (frame_idx <= 0 || frame_idx >= difference_type(DIC_output.disps.size())) {
-                return;
-            }
-            const auto& cu = DIC_output.disps[frame_idx].get_u().get_array();
-            const auto& cv = DIC_output.disps[frame_idx].get_v().get_array();
-            const auto& pu = DIC_output.disps[frame_idx - 1].get_u().get_array();
-            const auto& pv = DIC_output.disps[frame_idx - 1].get_v().get_array();
-            if (cu.height() != pu.height() || cu.width() != pu.width()) return;
-            std::vector<double> du, dv;
-            du.reserve(static_cast<size_t>(cu.height()) * cu.width());
-            dv.reserve(static_cast<size_t>(cu.height()) * cu.width());
-            for (difference_type p2 = 0; p2 < cu.width(); ++p2) {
-                for (difference_type p1 = 0; p1 < cu.height(); ++p1) {
-                    const double cuv = cu(p1, p2), cvv = cv(p1, p2);
-                    const double puv = pu(p1, p2), pvv = pv(p1, p2);
-                    const bool cur_valid = (cuv != 0.0 || cvv != 0.0);
-                    const bool prev_valid = (puv != 0.0 || pvv != 0.0);
-                    if (cur_valid && prev_valid) {
-                        const double duv = std::abs(cuv - puv);
-                        const double dvv = std::abs(cvv - pvv);
-                        du.push_back(duv); dv.push_back(dvv);
-                        if (duv > max_du) max_du = duv;
-                        if (dvv > max_dv) max_dv = dvv;
-                    }
-                }
-            }
-            n_common = difference_type(du.size());
-            if (!du.empty()) {
-                std::nth_element(du.begin(), du.begin() + du.size() / 2, du.end());
-                med_du = du[du.size() / 2];
-                std::nth_element(dv.begin(), dv.begin() + dv.size() / 2, dv.end());
-                med_dv = dv[dv.size() / 2];
-            }
-        };
-
-        // Identify segment-boundary cur_idx values (first frame of each
-        // segment beyond segment 1).
-        std::set<difference_type> boundaries;
-        for (difference_type i = 0; i < difference_type(step_ref_idx.size()); ++i) {
-            if (step_ref_idx[i] > 0 &&
-                (i == 0 || step_ref_idx[i - 1] != step_ref_idx[i])) {
-                boundaries.insert(i + 1); // cur_idx (0-indexed image idx + 1)
-            }
-        }
-
-        // Helper: stats over a Disp2D's valid (non-zero) pixels.
-        auto disp_stats = [](const Disp2D& d,
-                             double& mean_u, double& mean_v,
-                             double& max_au, double& max_av,
-                             difference_type& n_valid) {
-            mean_u = mean_v = 0.0;
-            max_au = max_av = 0.0;
-            n_valid = 0;
-            const auto& u_arr = d.get_u().get_array();
-            const auto& v_arr = d.get_v().get_array();
-            for (difference_type p2 = 0; p2 < u_arr.width(); ++p2) {
-                for (difference_type p1 = 0; p1 < u_arr.height(); ++p1) {
-                    const double u = u_arr(p1, p2);
-                    const double v = v_arr(p1, p2);
-                    if (u != 0.0 || v != 0.0) {
-                        mean_u += u; mean_v += v;
-                        if (std::abs(u) > max_au) max_au = std::abs(u);
-                        if (std::abs(v) > max_av) max_av = std::abs(v);
-                        ++n_valid;
-                    }
-                }
-            }
-            if (n_valid > 0) {
-                mean_u /= double(n_valid);
-                mean_v /= double(n_valid);
-            }
-        };
-
-        // Per-boundary raw step_disp magnitudes -- helps distinguish "DIC
-        // produced a huge segment-2 first disp" (bug in DIC) from "DIC
-        // produced a small disp but chaining corrupted it" (bug in add_with_rois).
-        std::cout << "[matlab_DIC_analysis seam diagnostic] "
-                  << "Raw step_disp magnitudes at each boundary (bridge = prev seg last disp, target = new seg first disp):"
-                  << std::endl;
-        for (difference_type boundary : boundaries) {
-            const difference_type tgt_idx = boundary - 1;     // index into step_disps for new seg first disp
-            const difference_type bridge_idx = step_ref_idx[tgt_idx] - 1; // prev seg last disp
-            double bm_u = 0, bm_v = 0, bM_u = 0, bM_v = 0;
-            difference_type bn = 0;
-            if (bridge_idx >= 0) disp_stats(step_disps[bridge_idx], bm_u, bm_v, bM_u, bM_v, bn);
-            double tm_u = 0, tm_v = 0, tM_u = 0, tM_v = 0;
-            difference_type tn = 0;
-            disp_stats(step_disps[tgt_idx], tm_u, tm_v, tM_u, tM_v, tn);
-            std::cout << "  boundary cur_idx=" << (boundary + 1)
-                      << " new_seg_ref=" << (step_ref_idx[tgt_idx] + 1)
-                      << " | bridge step_disps[" << (bridge_idx + 1) << "]"
-                      << " (disp ref1->ref2): mean_u=" << bm_u << " mean_v=" << bm_v
-                      << " max|u|=" << bM_u << " max|v|=" << bM_v << " n=" << bn
-                      << " | target step_disps[" << (tgt_idx + 1) << "]"
-                      << " (disp ref2->cur): mean_u=" << tm_u << " mean_v=" << tm_v
-                      << " max|u|=" << tM_u << " max|v|=" << tM_v << " n=" << tn
-                      << std::endl;
-        }
-
-        std::cout << "[matlab_DIC_analysis seam diagnostic] "
-                  << "Per-frame |delta_t| stats around each segment boundary "
-                  << "(* marks the boundary frame -- first frame of new segment):"
-                  << std::endl;
-        std::cout << "  frame seg_ref n_valid    mean_u    mean_v   med|du|   med|dv|   max|du|   max|dv|"
-                  << std::endl;
-
-        const auto out_prec = std::cout.precision();
-        std::cout.precision(5);
-        for (difference_type boundary : boundaries) {
-            const difference_type lo = std::max<difference_type>(1, boundary - 1);
-            const difference_type hi = std::min<difference_type>(
-                difference_type(DIC_output.disps.size()), boundary + 2);
-            for (difference_type cur_idx = lo; cur_idx <= hi; ++cur_idx) {
-                const difference_type frame_idx = cur_idx - 1;
-                double mean_u = 0, mean_v = 0;
-                difference_type n_valid = 0;
-                frame_stats(frame_idx, mean_u, mean_v, n_valid);
-                double med_du = 0, med_dv = 0, max_du = 0, max_dv = 0;
-                difference_type n_common = 0;
-                delta_stats(frame_idx, med_du, med_dv, max_du, max_dv, n_common);
-                const char marker = (cur_idx == boundary) ? '*' : ' ';
-                std::cout << "  " << marker
-                          << " " << (cur_idx + 1)            // 1-indexed image number
-                          << " seg_ref=" << (step_ref_idx[frame_idx] + 1)
-                          << " n=" << n_valid
-                          << "  u=" << mean_u
-                          << "  v=" << mean_v
-                          << "  med|du|=" << med_du
-                          << "  med|dv|=" << med_dv
-                          << "  max|du|=" << max_du
-                          << "  max|dv|=" << max_dv
-                          << "  n_common=" << n_common
-                          << std::endl;
-            }
-            std::cout << "  ----" << std::endl;
-        }
-        std::cout.precision(out_prec);
-    }
 
     if (DIC_input.save_disps_steps && !step_disps.empty()) {
         DIC_analysis_step_data step_data;
@@ -5674,22 +5512,16 @@ inline void fill_region_extrap(const Disp2D& disp,
 // interpolator's raw pointer dangling.
 inline void bind_interpolators(exact_region_disp& out) {
     if (out.empty) return;
-    // CUBIC_KEYS_PRECOMPUTE (Catmull-Rom bicubic) is used here intentionally
-    // instead of QUINTIC_BSPLINE: at integer grid points Catmull-Rom returns
-    // the source value EXACTLY (no bcoef, no FFT). The quintic-B-spline
-    // implementation in Array2D builds bcoef via circular FFT deconv on a
-    // pad(A, 20, EXPAND_EDGES) array; when A has a non-zero top/bottom
-    // edge gradient (large per-frame motion, e.g. disp ~ 155 px), the
-    // top<->bottom circular wrap creates a synthetic discontinuity that the
-    // FFT deconv amplifies into a ~+29% spectral bias visible as a constant
-    // overshoot at every integer query. See seam diagnostic in
-    // matlab_DIC_analysis_*: a value of 188 in the source array was returning
-    // 243 from QUINTIC_BSPLINE here, producing a ~+48v jump in the chained
-    // disp at the first segment boundary. Catmull-Rom does not have this
-    // pathology because it does not invert convolution.
-    out.v_interp  = out.plot_v_extrap .get_interpolator(INTERP::CUBIC_KEYS_PRECOMPUTE);
-    out.u_interp  = out.plot_u_extrap .get_interpolator(INTERP::CUBIC_KEYS_PRECOMPUTE);
-    out.cc_interp = out.plot_cc_extrap.get_interpolator(INTERP::CUBIC_KEYS_PRECOMPUTE);
+    // Biquintic B-spline matches MATLAB ncorr's interp_qbs exactly. The
+    // underlying Array2D::quintic_interp uses the Unser-Aldroubi-Eden
+    // recursive bcoef filter (see Array2D.h), which round-trips at integer
+    // query points regardless of the source array's edge gradient. (An
+    // earlier version of that filter used a circular FFT deconv that
+    // produced a ~+29% spectral bias on disp fields with large motion;
+    // that has been fixed at the source.)
+    out.v_interp  = out.plot_v_extrap .get_interpolator(INTERP::QUINTIC_BSPLINE);
+    out.u_interp  = out.plot_u_extrap .get_interpolator(INTERP::QUINTIC_BSPLINE);
+    out.cc_interp = out.plot_cc_extrap.get_interpolator(INTERP::QUINTIC_BSPLINE);
 }
 
 } // namespace exact_detail
