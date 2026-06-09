@@ -38,6 +38,7 @@ ADD_EXECUTABLE(ncorr_test_rgdic_verification src/ncorr_test_rgdic_verification.c
 ADD_EXECUTABLE(ncorr_test_sequential src/ncorr_test_sequential.cpp)
 ADD_EXECUTABLE(ncorr_test_parallel src/ncorr_test_parallel.cpp)
 ADD_EXECUTABLE(proxyncorr src/proxyncorr.cpp)
+ADD_EXECUTABLE(ncorr_test_chain_seam src/ncorr_test_chain_seam.cpp)
 
 # Set -03 optimization
 INCLUDE(CheckCXXCompilerFlag)
@@ -94,6 +95,7 @@ target_link_libraries(ncorr_test_rgdic_verification ${OpenCV_LIBS})
 target_link_libraries(ncorr_test_sequential ${OpenCV_LIBS})
 target_link_libraries(ncorr_test_parallel ${OpenCV_LIBS})
 target_link_libraries(proxyncorr ${OpenCV_LIBS})
+target_link_libraries(ncorr_test_chain_seam ${OpenCV_LIBS})
 
 # Add ncorr library
 add_subdirectory(.. ${CMAKE_CURRENT_BINARY_DIR}/ncorr_lib)
@@ -111,6 +113,7 @@ target_link_libraries(ncorr_test_rgdic_verification ncorr)
 target_link_libraries(ncorr_test_sequential ncorr)
 target_link_libraries(ncorr_test_parallel ncorr)
 target_link_libraries(proxyncorr ncorr)
+target_link_libraries(ncorr_test_chain_seam ncorr)
 
 # Link OpenMP to test executables
 if(OpenMP_CXX_FOUND)
@@ -128,6 +131,7 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(ncorr_test_sequential OpenMP::OpenMP_CXX)
     target_link_libraries(ncorr_test_parallel OpenMP::OpenMP_CXX)
     target_link_libraries(proxyncorr OpenMP::OpenMP_CXX)
+    target_link_libraries(ncorr_test_chain_seam OpenMP::OpenMP_CXX)
 endif()
 
 # Add opencv libraries
@@ -146,6 +150,7 @@ target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY1})
 target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY1})
 target_link_libraries(ncorr_test_parallel ${OPENCV_LIBRARY1})
 target_link_libraries(proxyncorr ${OPENCV_LIBRARY1})
+target_link_libraries(ncorr_test_chain_seam ${OPENCV_LIBRARY1})
 
 FIND_LIBRARY(OPENCV_LIBRARY2 NAMES opencv_highgui)
 TARGET_LINK_LIBRARIES(ncorr_test ${OPENCV_LIBRARY2})
@@ -162,6 +167,7 @@ target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY2})
 target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY2})
 target_link_libraries(ncorr_test_parallel ${OPENCV_LIBRARY2})
 target_link_libraries(proxyncorr ${OPENCV_LIBRARY2})
+target_link_libraries(ncorr_test_chain_seam ${OPENCV_LIBRARY2})
 
 FIND_LIBRARY(OPENCV_LIBRARY3 NAMES opencv_imgcodecs)
 TARGET_LINK_LIBRARIES(ncorr_test ${OPENCV_LIBRARY3})
@@ -178,6 +184,7 @@ target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY3})
 target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY3})
 target_link_libraries(ncorr_test_parallel ${OPENCV_LIBRARY3})
 target_link_libraries(proxyncorr ${OPENCV_LIBRARY3})
+target_link_libraries(ncorr_test_chain_seam ${OPENCV_LIBRARY3})
 
 FIND_LIBRARY(OPENCV_LIBRARY4 NAMES opencv_imgproc)
 TARGET_LINK_LIBRARIES(ncorr_test ${OPENCV_LIBRARY4})
@@ -194,6 +201,7 @@ target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY4})
 target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY4})
 target_link_libraries(ncorr_test_parallel ${OPENCV_LIBRARY4})
 target_link_libraries(proxyncorr ${OPENCV_LIBRARY4})
+target_link_libraries(ncorr_test_chain_seam ${OPENCV_LIBRARY4})
 
 FIND_LIBRARY(OPENCV_LIBRARY5 NAMES opencv_videoio)
 TARGET_LINK_LIBRARIES(ncorr_test ${OPENCV_LIBRARY5})
@@ -210,6 +218,7 @@ target_link_libraries(ncorr_test_rgdic_verification ${OPENCV_LIBRARY5})
 target_link_libraries(ncorr_test_sequential ${OPENCV_LIBRARY5})
 target_link_libraries(ncorr_test_parallel ${OPENCV_LIBRARY5})
 target_link_libraries(proxyncorr ${OPENCV_LIBRARY5})
+target_link_libraries(ncorr_test_chain_seam ${OPENCV_LIBRARY5})
 
 # Add fftw library (with FetchContent fallback)
 find_or_fetch_fftw()
@@ -227,13 +236,15 @@ target_link_libraries(ncorr_test_rgdic_verification ${FFTW_LIBRARY})
 target_link_libraries(ncorr_test_sequential ${FFTW_LIBRARY})
 target_link_libraries(ncorr_test_parallel ${FFTW_LIBRARY})
 target_link_libraries(proxyncorr ${FFTW_LIBRARY})
+target_link_libraries(ncorr_test_chain_seam ${FFTW_LIBRARY})
 
 # Add suite sparse libraries (with FetchContent fallback)
 find_or_fetch_suitesparse()
 foreach(target ncorr_test ncorr_test_cubic ncorr_test_json ncorr_test_verif 
                ncorr_test_parity interpolator_test ncorr_interpolator_test 
                ncorr_cubic_interpolator_test ncorr_nloptimizer_test roi2d_reduce_test 
-               ncorr_test_rgdic_verification ncorr_test_sequential ncorr_test_parallel proxyncorr)
+               ncorr_test_rgdic_verification ncorr_test_sequential ncorr_test_parallel proxyncorr
+               ncorr_test_chain_seam)
     target_link_libraries(${target} ${SUITESPARSE_LIBRARIES})
 endforeach()
 
@@ -242,7 +253,8 @@ find_or_fetch_openblas()
 foreach(target ncorr_test ncorr_test_cubic ncorr_test_json ncorr_test_verif 
                ncorr_test_parity interpolator_test ncorr_interpolator_test 
                ncorr_cubic_interpolator_test ncorr_nloptimizer_test roi2d_reduce_test 
-               ncorr_test_rgdic_verification ncorr_test_sequential ncorr_test_parallel proxyncorr)
+               ncorr_test_rgdic_verification ncorr_test_sequential ncorr_test_parallel proxyncorr
+               ncorr_test_chain_seam)
     target_link_libraries(${target} ${LAPACK_LIBRARIES} ${BLAS_LIBRARIES})
 endforeach()
 
@@ -266,6 +278,7 @@ target_link_libraries(ncorr_test_rgdic_verification ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(ncorr_test_sequential ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(ncorr_test_parallel ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(proxyncorr ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(ncorr_test_chain_seam ${CMAKE_THREAD_LIBS_INIT})
 
 # Find and link nlohmann/json library (with FetchContent fallback)
 find_or_fetch_nlohmann_json()
