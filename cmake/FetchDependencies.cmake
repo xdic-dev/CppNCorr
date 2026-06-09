@@ -40,11 +40,11 @@ macro(find_or_fetch_opencv)
     if(NOT FORCE_FETCH_DEPENDENCIES)
         find_package(OpenCV QUIET)
     endif()
-    
+
     if(NOT OpenCV_FOUND)
         message(STATUS "OpenCV not found - fetching from GitHub...")
         message(STATUS "Note: Building OpenCV from source may take a long time")
-        
+
         # Set OpenCV build options for minimal build
         set(BUILD_LIST "core,imgproc,imgcodecs,highgui,videoio" CACHE STRING "" FORCE)
         set(BUILD_opencv_apps OFF CACHE BOOL "" FORCE)
@@ -69,7 +69,7 @@ macro(find_or_fetch_opencv)
         set(WITH_TIFF OFF CACHE BOOL "" FORCE)
         set(WITH_PNG ON CACHE BOOL "" FORCE)
         set(WITH_JPEG ON CACHE BOOL "" FORCE)
-        
+
         FetchContent_Declare(
             opencv
             GIT_REPOSITORY https://github.com/opencv/opencv.git
@@ -77,15 +77,31 @@ macro(find_or_fetch_opencv)
             GIT_SHALLOW    TRUE
         )
         FetchContent_MakeAvailable(opencv)
-        
+
         # Set variables that find_package would normally set
         set(OpenCV_FOUND TRUE)
         set(OpenCV_INCLUDE_DIRS ${opencv_SOURCE_DIR}/include ${opencv_BINARY_DIR})
         set(OpenCV_LIBS opencv_core opencv_imgproc opencv_imgcodecs opencv_highgui opencv_videoio)
-        
+
         message(STATUS "OpenCV fetched successfully")
     else()
         message(STATUS "Found system OpenCV: ${OpenCV_VERSION}")
+        # On Ubuntu/Debian, OpenCV may be in /usr/include/opencv4/
+        # Need to add this path for opencv2/opencv.hpp to be found
+        if(EXISTS "/usr/include/opencv4")
+            list(APPEND OpenCV_INCLUDE_DIRS "/usr/include/opencv4")
+            message(STATUS "Added /usr/include/opencv4 to OpenCV include dirs")
+        endif()
+        # Also check for opencv4 in other common locations
+        find_path(OPENCV4_INCLUDE_DIR opencv2/opencv.hpp
+            PATHS /usr/include/opencv4 /usr/local/include/opencv4
+            NO_DEFAULT_PATH
+            NO_CACHE
+        )
+        if(OPENCV4_INCLUDE_DIR)
+            list(APPEND OpenCV_INCLUDE_DIRS ${OPENCV4_INCLUDE_DIR})
+            message(STATUS "Found opencv4 headers at: ${OPENCV4_INCLUDE_DIR}")
+        endif()
     endif()
 endmacro()
 
@@ -134,13 +150,20 @@ macro(find_or_fetch_suitesparse)
     else()
         message(STATUS "Found system SuiteSparse")
         set(SUITESPARSE_FOUND TRUE)
-        set(SUITESPARSE_LIBRARIES 
-            ${SPQR_LIBRARY} 
-            ${CHOLMOD_LIBRARY} 
-            ${SUITESPARSE_CONFIG_LIBRARY} 
-            ${AMD_LIBRARY} 
+        set(SUITESPARSE_LIBRARIES
+            ${SPQR_LIBRARY}
+            ${CHOLMOD_LIBRARY}
+            ${SUITESPARSE_CONFIG_LIBRARY}
+            ${AMD_LIBRARY}
             ${COLAMD_LIBRARY}
         )
+        # Find SuiteSparse include directory for suitesparse/SuiteSparseQR.hpp
+        find_path(SUITESPARSE_INCLUDE_DIR suitesparse/SuiteSparseQR.hpp
+            HINTS /usr/include /usr/local/include
+        )
+        if(SUITESPARSE_INCLUDE_DIR)
+            message(STATUS "Found SuiteSparse include: ${SUITESPARSE_INCLUDE_DIR}")
+        endif()
     endif()
 endmacro()
 

@@ -79,6 +79,12 @@ if(FFTW_INCLUDE_DIR)
     message(STATUS "FFTW include: ${FFTW_INCLUDE_DIR}")
 endif()
 
+# Add SuiteSparse include directory if found
+if(SUITESPARSE_INCLUDE_DIR)
+    target_include_directories(ncorr PRIVATE ${SUITESPARSE_INCLUDE_DIR})
+    message(STATUS "SuiteSparse include: ${SUITESPARSE_INCLUDE_DIR}")
+endif()
+
 # Compiler flags
 target_compile_options(ncorr PRIVATE -Wall -Wextra)
 
