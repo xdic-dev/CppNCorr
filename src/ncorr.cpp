@@ -5040,20 +5040,42 @@ std::vector<Disp2D> matlab_run_segment_dic(const DIC_analysis_parallel_input& in
               << "\n  Requesting       = " << requested_threads << " threads"
               << std::endl;
 
+    std::vector<double> per_thread_seconds(requested_threads, 0.0);
+    std::vector<long>   per_thread_frames (requested_threads, 0);
+    const double t_wall_begin = omp_get_wtime();
+
     #pragma omp parallel for num_threads(requested_threads) schedule(dynamic)
     for (difference_type frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
-        // Print actual thread info once per thread (first iteration each thread picks up)
-        {
-            int tid = omp_get_thread_num();
-            int nthr = omp_get_num_threads();
-            #pragma omp critical
-            {
-                std::cout << "  [segment_dic] frame " << frame_idx
-                          << " on thread " << tid << " / " << nthr << std::endl;
-            }
-        }
+        const int tid  = omp_get_thread_num();
+        const int nthr = omp_get_num_threads();
+        const double t0 = omp_get_wtime();
+
         segment_disps[frame_idx] = compute_frame(frame_idx);
+
+        const double dt = omp_get_wtime() - t0;
+        per_thread_seconds[tid] += dt;
+        per_thread_frames [tid] += 1;
+        #pragma omp critical
+        {
+            std::cout << "  [segment_dic] frame " << frame_idx
+                      << " on thread " << tid << " / " << nthr
+                      << " took " << dt << " s" << std::endl;
+        }
     }
+
+    const double t_wall = omp_get_wtime() - t_wall_begin;
+    double total_cpu = 0.0;
+    std::cout << "[matlab_run_segment_dic] per-thread summary:" << std::endl;
+    for (int t = 0; t < requested_threads; ++t) {
+        std::cout << "  thread " << t
+                  << ": " << per_thread_frames[t] << " frames, "
+                  << per_thread_seconds[t] << " s" << std::endl;
+        total_cpu += per_thread_seconds[t];
+    }
+    std::cout << "  wall = " << t_wall << " s, sum-of-threads = "
+              << total_cpu << " s, speedup = "
+              << (t_wall > 0.0 ? total_cpu / t_wall : 0.0)
+              << " (ideal " << requested_threads << ")" << std::endl;
 
     return segment_disps;
 }
