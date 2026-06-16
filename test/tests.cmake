@@ -42,9 +42,7 @@ add_executable(ncorr_unit_tests
     test/unit/test_ini.cpp
     test/unit/test_config.cpp
     test/unit/test_frame_reader.cpp
-    test/unit/test_session.cpp
     src/config.cpp
-    src/session.cpp
 )
 target_include_directories(ncorr_unit_tests PRIVATE include)
 target_compile_definitions(ncorr_unit_tests PRIVATE
@@ -66,6 +64,8 @@ find_or_fetch_openblas()
 add_executable(ncorr_engine_tests
     test/integration/test_pipeline.cpp
     test/e2e/test_e2e.cpp
+    test/unit/test_session.cpp
+    src/session.cpp
 )
 target_include_directories(ncorr_engine_tests PRIVATE include ${OpenCV_INCLUDE_DIRS})
 target_compile_definitions(ncorr_engine_tests PRIVATE
@@ -98,3 +98,9 @@ catch_discover_tests(ncorr_engine_tests
     TEST_SPEC "[e2e]"
     TEST_PREFIX "e2e:"
     PROPERTIES LABELS "e2e")
+# Session contract cases (no DIC) are tagged "[session]" and labelled "unit"
+# even though they now live in the engine target (session.cpp pulls the engine).
+catch_discover_tests(ncorr_engine_tests
+    TEST_SPEC "[session]"
+    TEST_PREFIX "session:"
+    PROPERTIES LABELS "unit")
