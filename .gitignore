@@ -1,5 +1,8 @@
 lib/libncorr.a
+lib/libCatch2.a
+lib/libCatch2Main.a
 build
+build_tests
 test/bin
 test/examples/ohtcfrp/save/
 test/examples/ohtcfrp/video/

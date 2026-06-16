@@ -104,3 +104,35 @@ ADD_DEFINITIONS(-DNDEBUG)
 # Install library
 INSTALL(TARGETS ncorr DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 INSTALL(FILES ${ncorr_h} DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# ============================================================================
+# Tests (section 5b) — Catch2 v3 via FetchContent.
+# ----------------------------------------------------------------------------
+# CRITICAL: all test infrastructure (Catch2 FetchContent, enable_testing(),
+# test targets, add_test/CTest) is gated so it ONLY activates when CppNCorr is
+# the TOP-LEVEL project. The parent CPPxDIC project does
+# add_subdirectory(Tools/CppNCorr); without this guard the test/Catch2 logic
+# would leak into and break the parent build.
+#
+# PROJECT_IS_TOP_LEVEL is set automatically by project() on CMake >= 3.21; for
+# older CMake we derive it by comparing the source/binary dirs.
+# ============================================================================
+if(NOT DEFINED PROJECT_IS_TOP_LEVEL)
+    if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+        set(PROJECT_IS_TOP_LEVEL ON)
+    else()
+        set(PROJECT_IS_TOP_LEVEL OFF)
+    endif()
+endif()
+
+# BUILD_TESTING defaults ON only when CppNCorr is top-level. When pulled in as a
+# subdirectory it defaults OFF so the parent is never affected.
+option(BUILD_TESTING "Build the CppNCorr test suite (Catch2)" ${PROJECT_IS_TOP_LEVEL})
+
+if(PROJECT_IS_TOP_LEVEL AND BUILD_TESTING)
+    message(STATUS "CppNCorr: top-level build with testing enabled — configuring Catch2 test suite")
+    enable_testing()
+    include(${CMAKE_CURRENT_SOURCE_DIR}/test/tests.cmake)
+else()
+    message(STATUS "CppNCorr: tests skipped (PROJECT_IS_TOP_LEVEL=${PROJECT_IS_TOP_LEVEL}, BUILD_TESTING=${BUILD_TESTING})")
+endif()
