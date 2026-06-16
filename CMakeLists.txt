@@ -1,6 +1,13 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 3.14)
 PROJECT(ncorr_library)
 
+# Enforce C++17 project-wide (required for std::optional and modern features).
+# Setting these before any target guarantees every target inherits the standard,
+# in addition to the per-target properties set further down.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 # Include FetchContent fallbacks for systems without root access
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FetchDependencies)
