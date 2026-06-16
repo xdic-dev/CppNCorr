@@ -35,8 +35,7 @@ DIC_analysis_input make_small_input() {
     ROI2D roi(Image2D(kFixtureDir + "/roi.png").get_gs() > 0.5);
 
     // scalefactor 1, large radius -> few seeds, fast, deterministic enough.
-    return DIC_analysis_input(imgs, roi, /*scalefactor=*/1,
-                              INTERP::QUINTIC_BSPLINE_PRECOMPUTE,
+    return DIC_analysis_input(imgs, roi, /*scalefactor=*/1, INTERP::QUINTIC_BSPLINE_PRECOMPUTE,
                               SUBREGION::CIRCLE, /*radius=*/30,
                               /*num_threads=*/1, DIC_analysis_config::NO_UPDATE,
                               /*debug=*/false);

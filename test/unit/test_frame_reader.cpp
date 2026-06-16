@@ -22,8 +22,8 @@ namespace {
 // Create a unique temporary directory and return its path (no trailing slash).
 std::string make_temp_dir() {
     static int counter = 0;
-    std::string base = std::string(std::tmpnam(nullptr)) + "_ncorr_frames_" +
-                       std::to_string(counter++);
+    std::string base =
+        std::string(std::tmpnam(nullptr)) + "_ncorr_frames_" + std::to_string(counter++);
     mkdir(base.c_str(), 0755);
     return base;
 }
@@ -80,15 +80,14 @@ TEST_CASE("discover_frames_sorted", "[unit][frame_reader]") {
 TEST_CASE("discover_frames_excludes_reserved", "[unit][frame_reader]") {
     std::string dir = make_temp_dir();
     touch(dir + "/frame_1.png");
-    touch(dir + "/roi.png");          // reserved
-    touch(dir + "/ref.png");          // reserved
-    touch(dir + "/.hidden.png");      // hidden
-    touch(dir + "/notes.txt");        // non-image
-    touch(dir + "/custom_ref.png");   // excluded via ref_path basename
+    touch(dir + "/roi.png");                 // reserved
+    touch(dir + "/ref.png");                 // reserved
+    touch(dir + "/.hidden.png");             // hidden
+    touch(dir + "/notes.txt");               // non-image
+    touch(dir + "/custom_ref.png");          // excluded via ref_path basename
     mkdir((dir + "/subdir").c_str(), 0755);  // sub-directory, ignored
 
-    auto frames =
-        ncorr::discover_frames(dir, dir + "/custom_ref.png", "");
+    auto frames = ncorr::discover_frames(dir, dir + "/custom_ref.png", "");
     REQUIRE(frames.size() == 1);
     CHECK(frames[0] == dir + "/frame_1.png");
 }
@@ -100,7 +99,6 @@ TEST_CASE("discover_frames_empty", "[unit][frame_reader]") {
 }
 
 TEST_CASE("discover_frames_missing_folder", "[unit][frame_reader]") {
-    CHECK_THROWS_AS(
-        ncorr::discover_frames("/no/such/folder_abc_98765", "", ""),
-        std::runtime_error);
+    CHECK_THROWS_AS(ncorr::discover_frames("/no/such/folder_abc_98765", "", ""),
+                    std::runtime_error);
 }

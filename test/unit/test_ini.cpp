@@ -21,8 +21,8 @@ namespace {
 // per-section so collisions are avoided via a counter.
 std::string write_temp_ini(const std::string& content) {
     static int counter = 0;
-    std::string path = std::string(std::tmpnam(nullptr)) + "_ncorr_ini_" +
-                       std::to_string(counter++) + ".cfg";
+    std::string path =
+        std::string(std::tmpnam(nullptr)) + "_ncorr_ini_" + std::to_string(counter++) + ".cfg";
     std::ofstream out(path, std::ios::binary);
     out << content;
     out.close();

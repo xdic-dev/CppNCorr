@@ -50,7 +50,8 @@ target_include_directories(ncorr_unit_tests PRIVATE include)
 target_compile_definitions(ncorr_unit_tests PRIVATE
     NCORR_DEFAULT_CFG="${NCORR_DEFAULT_CFG_PATH}")
 target_link_libraries(ncorr_unit_tests PRIVATE Catch2::Catch2WithMain)
-catch_discover_tests(ncorr_unit_tests)
+# Label every discovered case "unit" so CI can select it with `ctest -L unit`.
+catch_discover_tests(ncorr_unit_tests PROPERTIES LABELS "unit")
 
 # ----------------------------------------------------------------------------
 # 2. Engine tests (integration + e2e) — link the full ncorr library, which the
@@ -86,4 +87,14 @@ endif()
 if(OpenMP_CXX_FOUND)
     target_link_libraries(ncorr_engine_tests PRIVATE OpenMP::OpenMP_CXX)
 endif()
-catch_discover_tests(ncorr_engine_tests)
+# Register the integration and e2e cases with distinct CTest labels so CI can
+# run them selectively (e.g. `ctest -L integration`, `ctest -L e2e`). Each
+# invocation filters by Catch2 tag via TEST_SPEC.
+catch_discover_tests(ncorr_engine_tests
+    TEST_SPEC "[integration]"
+    TEST_PREFIX "integration:"
+    PROPERTIES LABELS "integration")
+catch_discover_tests(ncorr_engine_tests
+    TEST_SPEC "[e2e]"
+    TEST_PREFIX "e2e:"
+    PROPERTIES LABELS "e2e")

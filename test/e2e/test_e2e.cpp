@@ -50,8 +50,8 @@ constexpr double kUnitsPerPixel = 0.2;
 // (~11%) so the regression guard stays robust across platforms/compilers/thread
 // counts while still catching a real behavioural regression.
 constexpr double kGoldenMeanDispMag = 0.180423;  // mm (units_per_pixel = 0.2)
-constexpr double kGoldenTolerance   = 0.02;      // mm
-constexpr bool   kGoldenRecorded    = true;      // baseline baked in
+constexpr double kGoldenTolerance = 0.02;        // mm
+constexpr bool kGoldenRecorded = true;           // baseline baked in
 
 // Mean magnitude of finite (u,v) inside the ROI for the given displacement field.
 double mean_disp_magnitude(const Disp2D& disp) {
@@ -81,8 +81,7 @@ TEST_CASE("e2e_ohtcfrp_smoke", "[e2e]") {
 
     ROI2D roi(Image2D(kFixtureDir + "/roi.png").get_gs() > 0.5);
 
-    DIC_analysis_input input(imgs, roi, kScaleFactor,
-                             INTERP::QUINTIC_BSPLINE_PRECOMPUTE,
+    DIC_analysis_input input(imgs, roi, kScaleFactor, INTERP::QUINTIC_BSPLINE_PRECOMPUTE,
                              SUBREGION::CIRCLE, kRadius, /*num_threads=*/1,
                              DIC_analysis_config::NO_UPDATE, /*debug=*/false);
 
@@ -109,8 +108,9 @@ TEST_CASE("e2e_ohtcfrp_smoke", "[e2e]") {
 
 TEST_CASE("e2e_ohtcfrp_known_value", "[e2e]") {
     if (!kGoldenRecorded) {
-        SUCCEED("golden baseline not yet recorded; run with NCORR_E2E_CAPTURE=1 "
-                "to capture it (see e2e_ohtcfrp_smoke).");
+        SUCCEED(
+            "golden baseline not yet recorded; run with NCORR_E2E_CAPTURE=1 "
+            "to capture it (see e2e_ohtcfrp_smoke).");
         return;
     }
 
@@ -121,8 +121,7 @@ TEST_CASE("e2e_ohtcfrp_known_value", "[e2e]") {
 
     ROI2D roi(Image2D(kFixtureDir + "/roi.png").get_gs() > 0.5);
 
-    DIC_analysis_input input(imgs, roi, kScaleFactor,
-                             INTERP::QUINTIC_BSPLINE_PRECOMPUTE,
+    DIC_analysis_input input(imgs, roi, kScaleFactor, INTERP::QUINTIC_BSPLINE_PRECOMPUTE,
                              SUBREGION::CIRCLE, kRadius, /*num_threads=*/1,
                              DIC_analysis_config::NO_UPDATE, /*debug=*/false);
 

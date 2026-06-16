@@ -18,8 +18,7 @@
 namespace {
 
 // Build a small valid grayscale buffer kept alive by the returned vector.
-ncorr::ImageBuffer make_buffer(std::vector<std::uint8_t>& storage, int w, int h,
-                               int ch = 1) {
+ncorr::ImageBuffer make_buffer(std::vector<std::uint8_t>& storage, int w, int h, int ch = 1) {
     storage.assign(static_cast<size_t>(w) * h * ch, 0);
     return ncorr::ImageBuffer(storage.data(), w, h, ch);
 }

@@ -1,0 +1,110 @@
+name: CI
+
+# Build, test and lint CppNCorr. Triggered on pushes and pull requests targeting
+# main and newversion. Kept deliberately fast: GCC on ubuntu-latest, system
+# dependencies from apt (no GPU, no large dataset downloads, no source builds of
+# OpenCV etc.).
+on:
+  push:
+    branches: [main, newversion]
+  pull_request:
+    branches: [main, newversion]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  # CMake >= 3.21 on the runner sets PROJECT_IS_TOP_LEVEL automatically.
+  CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+jobs:
+  build:
+    name: build (gcc, ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake \
+            libopencv-dev libfftw3-dev libsuitesparse-dev \
+            libopenblas-dev liblapack-dev nlohmann-json3-dev libomp-dev
+
+      - name: Configure (top-level, tests enabled)
+        run: cmake -S . -B build $CMAKE_ARGS
+
+      - name: Build library + tests
+        run: cmake --build build -j "$(nproc)"
+
+  test:
+    name: test (unit + integration via ctest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake \
+            libopencv-dev libfftw3-dev libsuitesparse-dev \
+            libopenblas-dev liblapack-dev nlohmann-json3-dev libomp-dev
+
+      - name: Configure
+        run: cmake -S . -B build $CMAKE_ARGS
+
+      - name: Build test targets
+        run: cmake --build build --target ncorr_unit_tests ncorr_engine_tests -j "$(nproc)"
+
+      - name: Run unit tests (fast)
+        working-directory: build
+        run: ctest --output-on-failure -L unit
+
+      - name: Run integration tests (ohtcfrp)
+        working-directory: build
+        env:
+          OMP_NUM_THREADS: "2"
+        # Integration DIC is compute-heavy; give it a generous timeout. The very
+        # slow end-to-end cases (label "e2e") are excluded here to keep CI fast —
+        # they run locally / on demand (see docs/developer_guide.md).
+        run: ctest --output-on-failure --timeout 1200 -L integration
+
+  lint:
+    name: lint (clang-format on changed files)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format
+
+      - name: clang-format --dry-run on changed C/C++ files
+        run: |
+          # Determine the base ref to diff against.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+            git fetch origin "${{ github.base_ref }}" || true
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          # Lint files ADDED on this branch (diff-filter=A). Pre-existing legacy
+          # files that only received small edits are intentionally not reformatted
+          # wholesale; the .clang-format style applies to new code on this branch.
+          CHANGED=$(git diff --name-only --diff-filter=A "$BASE" HEAD 2>/dev/null \
+                    | grep -E '\.(c|cc|cpp|cxx|h|hpp)$' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No newly added C/C++ files to lint."
+            exit 0
+          fi
+          echo "Linting:"; echo "$CHANGED"
+          # --dry-run --Werror fails if any file is not formatted.
+          clang-format --dry-run --Werror $CHANGED

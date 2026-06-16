@@ -44,8 +44,8 @@ namespace ncorr {
  * the user guide.
  */
 inline const std::vector<std::string>& image_extensions() {
-    static const std::vector<std::string> kImageExtensions = {
-        ".png", ".tif", ".tiff", ".bmp", ".jpg", ".jpeg"};
+    static const std::vector<std::string> kImageExtensions = {".png", ".tif", ".tiff",
+                                                              ".bmp", ".jpg", ".jpeg"};
     return kImageExtensions;
 }
 
@@ -125,8 +125,7 @@ inline std::vector<std::string> discover_frames(const std::string& folder,
     std::vector<std::string> frames;
     DIR* dir = opendir(folder.c_str());
     if (!dir) {
-        throw std::runtime_error("Cannot open folder '" + folder +
-                                 "': " + std::strerror(errno));
+        throw std::runtime_error("Cannot open folder '" + folder + "': " + std::strerror(errno));
     }
 
     // Get basenames to exclude.

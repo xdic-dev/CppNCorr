@@ -121,10 +121,20 @@ TEST_CASE("config_key_field_parity", "[unit][config]") {
 
     // 3. Guard against an unrecognised key silently slipping into default.cfg:
     //    every non-comment 'key = value' line must be one of the known fields.
-    static const std::set<std::string> known_keys = {
-        "scalefactor", "subregion_type", "subregion_radius", "interp_type",
-        "strain_subregion_type", "strain_radius", "dic_config", "num_threads",
-        "debug", "perspective_interp", "units", "units_per_pixel", "alpha", "fps"};
+    static const std::set<std::string> known_keys = {"scalefactor",
+                                                     "subregion_type",
+                                                     "subregion_radius",
+                                                     "interp_type",
+                                                     "strain_subregion_type",
+                                                     "strain_radius",
+                                                     "dic_config",
+                                                     "num_threads",
+                                                     "debug",
+                                                     "perspective_interp",
+                                                     "units",
+                                                     "units_per_pixel",
+                                                     "alpha",
+                                                     "fps"};
 
     ncorr::IniFile ini;
     REQUIRE(ini.load(cfg_path));
