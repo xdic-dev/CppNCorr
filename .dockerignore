@@ -1,0 +1,15 @@
+# Keep the Docker build context small and reproducible: never ship local build
+# trees, fetched dependency caches, or editor/OS cruft into the image.
+build
+build_tests
+test/build
+test/bin
+lib/libncorr.a
+lib/libCatch2.a
+lib/libCatch2Main.a
+**/.DS_Store
+.git
+.cache
+compile_commands.json
+test/examples/ohtcfrp/save/
+test/examples/ohtcfrp/video/
