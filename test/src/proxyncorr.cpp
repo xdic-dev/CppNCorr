@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <iomanip>
+#include <sstream>
 #include <nlohmann/json.hpp>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -263,6 +264,49 @@ void save_as_json(const DIC_analysis_input& dic_input,
 }
 
 // ============================================================================
+// Standalone strain CSV export
+// ----------------------------------------------------------------------------
+// Writes, per strain frame k, three grid CSV files (exx / eyy / exy). Each CSV
+// is the component's reduced-grid array written row-major: one line per row,
+// comma-separated columns. Values inside the strain ROI are printed numerically
+// (9 significant digits); points outside the ROI are written as "nan".
+// ============================================================================
+void save_strains_csv(const strain_analysis_output& strain_output,
+                      const std::string& dir) {
+    system(("mkdir -p " + dir).c_str());
+
+    auto write_component = [&](const Array2D<double>& arr,
+                               const Array2D<bool>& mask,
+                               const std::string& path) {
+        std::ofstream out(path);
+        out << std::setprecision(9);
+        for (int i = 0; i < arr.height(); ++i) {
+            for (int j = 0; j < arr.width(); ++j) {
+                if (j > 0) out << ",";
+                if (i < mask.height() && j < mask.width() && mask(i, j)) {
+                    out << arr(i, j);
+                } else {
+                    out << "nan";
+                }
+            }
+            out << "\n";
+        }
+    };
+
+    for (std::size_t k = 0; k < strain_output.strains.size(); ++k) {
+        const Strain2D& strain = strain_output.strains[k];
+        const Array2D<bool>& mask = strain.get_roi().get_mask();
+
+        std::ostringstream prefix;
+        prefix << dir << "/strain_" << std::setw(4) << std::setfill('0') << k;
+
+        write_component(strain.get_exx().get_array(), mask, prefix.str() + "_exx.csv");
+        write_component(strain.get_eyy().get_array(), mask, prefix.str() + "_eyy.csv");
+        write_component(strain.get_exy().get_array(), mask, prefix.str() + "_exy.csv");
+    }
+}
+
+// ============================================================================
 // File discovery functions
 // ----------------------------------------------------------------------------
 // discover_frames / has_image_extension / natural_less now live in the reusable
@@ -406,8 +450,7 @@ void print_usage(const char* prog_name) {
               << "  --export-video             Render displacement/strain fields as video\n"
               << "                             (forces video output on)\n"
               << "  --export-strains           Write strain fields to the output directory\n"
-              << "  --change-perspective <m>   Output perspective: eulerian (default).\n"
-              << "                             lagrangian is not yet implemented.\n"
+              << "  --change-perspective <m>   Output perspective: eulerian (default), lagrangian\n"
               << "  -h, --help                 Show this help message\n\n"
               << "CONFIG FILE FORMAT (config.txt):\n"
               << "  # Comment lines start with #\n"
@@ -605,22 +648,31 @@ int main(int argc, char* argv[]) {
         }
         std::cout << "[--export-strains] enabled: strain fields will be written "
                      "to the output directory." << std::endl;
-        // TODO(newversion): add a dedicated standalone strain export format
-        // (e.g. CSV / .mat) instead of relying on the JSON/binary bundle.
     }
-    if (!config.change_perspective_mode.empty()) {
+    // Resolve the output perspective. Native DIC output is Lagrangian; the
+    // default (no flag) converts to Eulerian to preserve historical behaviour.
+    bool to_eulerian = true;
+    std::string persp_label = "eulerian";
+    {
         std::string mode = config.change_perspective_mode;
         std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
-        if (mode == "eulerian") {
-            // Functional: this is exactly what the pipeline already does below.
-            std::cout << "[--change-perspective=eulerian] using Eulerian "
-                         "perspective (default)." << std::endl;
+        if (mode.empty() || mode == "eulerian") {
+            to_eulerian = true;
+            persp_label = "eulerian";
+            if (!config.change_perspective_mode.empty()) {
+                std::cout << "[--change-perspective=eulerian] using Eulerian "
+                             "perspective (default)." << std::endl;
+            }
+        } else if (mode == "lagrangian") {
+            to_eulerian = false;
+            persp_label = "lagrangian";
+            std::cout << "[--change-perspective=lagrangian] keeping native "
+                         "Lagrangian (reference) perspective." << std::endl;
         } else {
-            // FIXME(newversion): wire up Lagrangian / arbitrary perspective
-            // transforms (see change_perspective_with_inversion in ncorr.h).
-            std::cout << "[--change-perspective=" << config.change_perspective_mode
-                      << "] not yet implemented" << std::endl;
-            return 0;
+            std::cerr << "Error: unknown --change-perspective value '"
+                      << config.change_perspective_mode
+                      << "'. Use: eulerian (default) or lagrangian." << std::endl;
+            return 1;
         }
     }
 
@@ -757,23 +809,11 @@ int main(int argc, char* argv[]) {
                     std::cout << " (pre-optimized, skipping optimization step)";
                 }
                 std::cout << "..." << std::endl;
-                
-                DIC_analysis_parallel_input parallel_input(DIC_input, config.seeds_by_region, config.seeds_are_optimized);
-                // FIXME(newversion): DIC_analysis_sequential is overloaded for both
-                // DIC_analysis_input and DIC_analysis_parallel_input; the latter is
-                // implicitly convertible to the former, making a bare call ambiguous.
-                // Select the parallel-input overload explicitly via a function pointer
-                // so the user-provided seeds are honoured.
-                DIC_output = static_cast<DIC_analysis_output(*)(const DIC_analysis_parallel_input&)>(
-                                 &DIC_analysis_sequential)(parallel_input);
+
+                DIC_output = DIC_analysis_sequential(DIC_input, config.seeds_by_region, config.seeds_are_optimized);
             } else {
                 std::cout << "[SEQUENTIAL MODE] Performing DIC analysis with auto-generated seeds..." << std::endl;
-                // FIXME(newversion): same overload ambiguity as above. Here we want
-                // the DIC_analysis_input overload (no user seeds); select it
-                // explicitly via a function pointer.
-                DIC_output = static_cast<DIC_analysis_output(*)(const DIC_analysis_input&,
-                                 const std::vector<SeedParams>&, bool)>(
-                                 &DIC_analysis_sequential)(DIC_input, {}, false);
+                DIC_output = DIC_analysis_sequential(DIC_input, {}, false);
             }
         } else if (effective_mode == "parallel") {
             if (has_seeds) {
@@ -794,10 +834,14 @@ int main(int argc, char* argv[]) {
             throw std::runtime_error("Unknown algorithm mode: " + effective_mode + ". Use: auto, sequential, or parallel");
         }
         
-        // Convert to Eulerian perspective
-        std::cout << "Converting to Eulerian perspective..." << std::endl;
-        DIC_output = change_perspective(DIC_output, parse_interp(config.perspective_interp));
-        
+        // Resolve output perspective. Native DIC output is Lagrangian.
+        if (to_eulerian) {
+            std::cout << "Converting to Eulerian perspective..." << std::endl;
+            DIC_output = change_perspective(DIC_output, parse_interp(config.perspective_interp));
+        } else {
+            std::cout << "Keeping Lagrangian (reference) perspective..." << std::endl;
+        }
+
         // Set units
         DIC_output = set_units(DIC_output, config.units, config.units_per_pixel);
         
@@ -829,31 +873,37 @@ int main(int argc, char* argv[]) {
         
         if (config.save_json) {
             std::cout << "Saving JSON outputs..." << std::endl;
-            save_as_json(DIC_input, DIC_output, strain_input, strain_output, 
+            save_as_json(DIC_input, DIC_output, strain_input, strain_output,
                         config.output_dir + "/save_json");
         }
-        
+
+        if (config.export_strains) {
+            std::string csv_dir = config.output_dir + "/strains_csv";
+            std::cout << "Writing standalone strain CSV files to: " << csv_dir << std::endl;
+            save_strains_csv(strain_output, csv_dir);
+        }
+
         // Create videos
         if (config.save_videos) {
             std::cout << "Creating videos..." << std::endl;
             
-            save_DIC_video(config.output_dir + "/video/v_eulerian.avi",
+            save_DIC_video(config.output_dir + "/video/v_" + persp_label + ".avi",
                           DIC_input, DIC_output, DISP::V,
                           config.alpha, config.fps);
-            
-            save_DIC_video(config.output_dir + "/video/u_eulerian.avi",
+
+            save_DIC_video(config.output_dir + "/video/u_" + persp_label + ".avi",
                           DIC_input, DIC_output, DISP::U,
                           config.alpha, config.fps);
-            
-            save_strain_video(config.output_dir + "/video/eyy_eulerian.avi",
+
+            save_strain_video(config.output_dir + "/video/eyy_" + persp_label + ".avi",
                              strain_input, strain_output, STRAIN::EYY,
                              config.alpha, config.fps);
-            
-            save_strain_video(config.output_dir + "/video/exy_eulerian.avi",
+
+            save_strain_video(config.output_dir + "/video/exy_" + persp_label + ".avi",
                              strain_input, strain_output, STRAIN::EXY,
                              config.alpha, config.fps);
-            
-            save_strain_video(config.output_dir + "/video/exx_eulerian.avi",
+
+            save_strain_video(config.output_dir + "/video/exx_" + persp_label + ".avi",
                              strain_input, strain_output, STRAIN::EXX,
                              config.alpha, config.fps);
         }
