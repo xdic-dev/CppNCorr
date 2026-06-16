@@ -14,10 +14,10 @@
  *  - The usage pattern mirrors the file-based pipeline: set a reference frame
  *    once, then process one or more deformed frames.
  *
- * @note This is a STUB in the @c newversion branch: the interface is final but
- *       the bodies are not yet wired to the DIC engine. See session.cpp and the
- *       @c TODO markers. The image-folder reader path in @c proxyncorr.cpp
- *       (discover_frames + DIC_analysis) is the model implementation to follow.
+ * @note Results are the native Lagrangian displacement fields, in pixels, on
+ *       the reduced DIC analysis grid (see @ref DICResult). The implementation
+ *       drives the same engine path as the image-folder reader in
+ *       @c proxyncorr.cpp (Image2D -> DIC_analysis_input -> DIC_analysis).
  */
 
 #include <cstdint>
@@ -74,21 +74,27 @@ struct ImageBuffer {
 /**
  * @brief Result of running DIC on a single deformed frame.
  *
- * Displacement fields are returned as flat row-major arrays of length
- * @c width * @c height. Points outside the analysed region of interest are set
- * to NaN. The fields are deliberately plain @c std::vector<double> so callers do
- * not need any internal ncorr types to consume the result.
+ * Displacement fields are the native Lagrangian (reference-perspective) @c u /
+ * @c v in pixels, sampled on the reduced DIC analysis grid. @c width and
+ * @c height therefore describe the displacement array's own dimensions, which
+ * are generally smaller than the input image (they depend on scalefactor and
+ * subregion radius), NOT the reference frame size.
+ *
+ * Fields are returned as flat row-major arrays of length @c width * @c height.
+ * Points outside the analysed region of interest are set to NaN. The fields are
+ * deliberately plain @c std::vector<double> so callers do not need any internal
+ * ncorr types to consume the result.
  */
 struct DICResult {
-    /// Width of the displacement fields (pixels).
+    /// Width of the displacement fields, in reduced-grid samples.
     int width = 0;
-    /// Height of the displacement fields (pixels).
+    /// Height of the displacement fields, in reduced-grid samples.
     int height = 0;
-    /// Horizontal displacement field (u), row-major, size width*height. NaN outside ROI.
+    /// Horizontal Lagrangian displacement (u), pixels, row-major. NaN outside ROI.
     std::vector<double> u;
-    /// Vertical displacement field (v), row-major, size width*height. NaN outside ROI.
+    /// Vertical Lagrangian displacement (v), pixels, row-major. NaN outside ROI.
     std::vector<double> v;
-    /// Per-point correlation coefficient, row-major, size width*height (optional; may be empty).
+    /// Per-point correlation coefficient, row-major, size width*height. NaN outside ROI.
     std::vector<double> corrcoef;
     /// True if the frame was processed successfully.
     bool valid = false;
@@ -129,9 +135,9 @@ struct SessionConfig {
  * The session owns a private implementation (PIMPL) so that this header stays
  * free of heavy internal ncorr includes.
  *
- * @warning STUB: methods are declared and behave gracefully (see session.cpp)
- *          but DIC is not yet computed. Implement following the file-based path
- *          in proxyncorr.cpp (Image2D::from_mat -> DIC_analysis_input -> DIC_analysis).
+ * Each call to @ref process_frame runs a full @c DIC_analysis on
+ * {reference, deformed} and returns the native Lagrangian pixel displacements
+ * (and correlation coefficient) on the reduced analysis grid.
  */
 class NcorrSession {
 public:
@@ -164,11 +170,13 @@ public:
     /**
      * @brief Optionally supply a region-of-interest mask.
      *
-     * The mask is a single-channel buffer the same size as the reference; any
-     * non-zero pixel marks a point to analyse. If never called, the whole frame
-     * is analysed.
+     * The mask must match the reference geometry; any pixel whose grayscale
+     * value exceeds 0.5 marks a point to analyse. If never called, the whole
+     * frame is analysed. Setting a new reference clears any prior ROI.
      *
-     * @param roi_mask Single-channel ROI mask buffer.
+     * @param roi_mask ROI mask buffer (same width/height as the reference).
+     * @throws std::invalid_argument if the mask is invalid or, when a reference
+     *         is set, its geometry does not match the reference.
      */
     void set_roi(const ImageBuffer& roi_mask);
 
