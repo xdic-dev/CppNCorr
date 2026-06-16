@@ -1,4 +1,5 @@
 #include "ncorr.h"
+#include "ncorr/config.h"
 #include <fstream>
 #include <iostream>
 #include <iomanip>
@@ -98,6 +99,31 @@ DIC_analysis_config parse_dic_config(const std::string& s) {
     if (s == "KEEP_MOST_POINTS") return DIC_analysis_config::KEEP_MOST_POINTS;
     if (s == "REMOVE_BAD_POINTS") return DIC_analysis_config::REMOVE_BAD_POINTS;
     throw std::runtime_error("Unknown DIC config: " + s);
+}
+
+// ============================================================================
+// Override chain (section 4): compiled defaults -> config file -> CLI args
+// ----------------------------------------------------------------------------
+// ProxyConfig carries IO/path/seed fields that the core ncorr::Config does not.
+// The tuneable DIC parameters, however, are seeded from ncorr::Config's compiled
+// defaults and can be overridden by an INI config file (canonical key names) and
+// then by CLI args. apply_core_config() copies the tuneable subset across.
+// ============================================================================
+void apply_core_config(const ncorr::Config& core, ProxyConfig& cfg) {
+    cfg.scalefactor           = core.scalefactor;
+    cfg.subregion_type        = core.subregion_type;
+    cfg.subregion_radius      = core.subregion_radius;
+    cfg.interp_type           = core.interp_type;
+    cfg.strain_subregion_type = core.strain_subregion_type;
+    cfg.strain_radius         = core.strain_radius;
+    cfg.dic_config            = core.dic_config;
+    cfg.num_threads           = core.num_threads;
+    cfg.debug                 = core.debug;
+    cfg.perspective_interp    = core.perspective_interp;
+    cfg.units                 = core.units;
+    cfg.units_per_pixel       = core.units_per_pixel;
+    cfg.alpha                 = core.alpha;
+    cfg.fps                   = core.fps;
 }
 
 // ============================================================================
@@ -530,7 +556,11 @@ void print_usage(const char* prog_name) {
 // ============================================================================
 int main(int argc, char* argv[]) {
     ProxyConfig config;
-    
+
+    // Tier 3 (lowest priority): compiled defaults. Seed the tuneable DIC params
+    // from ncorr::Config so the compiled defaults live in one canonical place.
+    apply_core_config(ncorr::Config{}, config);
+
     // Long options
     static struct option long_options[] = {
         {"folder",          required_argument, 0, 'f'},
@@ -577,12 +607,56 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // Load config file if specified
-    if (!config_file.empty()) {
-        std::cout << "Loading config from: " << config_file << std::endl;
-        config = parse_config_file(config_file);
+    // Tier 2: config file. If none is given on the CLI, fall back to the shipped
+    // config/default.cfg when it exists, so the documented INI defaults apply.
+    std::string effective_config = config_file;
+    if (effective_config.empty() && file_exists("config/default.cfg")) {
+        effective_config = "config/default.cfg";
     }
-    
+
+    if (!effective_config.empty()) {
+        std::cout << "Loading config from: " << effective_config << std::endl;
+        // (a) Legacy short-key parser: handles paths, seeds, IO toggles and the
+        //     historical short tuneable keys (radius, interp, threads, ...).
+        try {
+            config = parse_config_file(effective_config);
+        } catch (const std::exception& e) {
+            // A missing legacy file is non-fatal here; the canonical INI loader
+            // below still runs (and may itself report a real parse error).
+            std::cerr << "Note: " << e.what() << std::endl;
+        }
+        // (b) Canonical INI overlay (section 4): override the tuneable DIC params
+        //     using the exact ncorr::Config field names. This complements the
+        //     legacy short keys above and is the documented override chain.
+        //     Seed the overlay with the values resolved so far (compiled defaults
+        //     plus any legacy values) so only canonical keys present in the file
+        //     are changed.
+        ncorr::Config overlay;
+        overlay.scalefactor           = config.scalefactor;
+        overlay.subregion_type        = config.subregion_type;
+        overlay.subregion_radius      = config.subregion_radius;
+        overlay.interp_type           = config.interp_type;
+        overlay.strain_subregion_type = config.strain_subregion_type;
+        overlay.strain_radius         = config.strain_radius;
+        overlay.dic_config            = config.dic_config;
+        overlay.num_threads           = config.num_threads;
+        overlay.debug                 = config.debug;
+        overlay.perspective_interp    = config.perspective_interp;
+        overlay.units                 = config.units;
+        overlay.units_per_pixel       = config.units_per_pixel;
+        overlay.alpha                 = config.alpha;
+        overlay.fps                   = config.fps;
+        try {
+            if (ncorr::load_config_file(effective_config, overlay)) {
+                apply_core_config(overlay, config);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error in config file '" << effective_config
+                      << "': " << e.what() << std::endl;
+            return 1;
+        }
+    }
+
     // Reset getopt
     optind = 1;
     
