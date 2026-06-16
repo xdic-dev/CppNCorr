@@ -57,6 +57,17 @@ struct ProxyConfig {
     bool save_json = true;
     bool save_binary = true;
     bool save_videos = true;
+
+    // --- Post-DIC output flags (section 2a) ---
+    // Explicit named toggles requested on the CLI. These complement the existing
+    // --no-* flags. When the user passes the explicit flag we force the matching
+    // behaviour on; when the backing operation has no dedicated implementation yet
+    // we print a "not yet implemented" notice and exit cleanly.
+    bool export_video   = false;  // alias/forces displacement-field video export
+    bool export_strains = false;  // alias/forces strain-field export
+    // change_perspective: empty = use default (perspective_interp); otherwise the
+    // requested mode. Recognised values: "eulerian". "lagrangian" is not yet wired.
+    std::string change_perspective_mode = "";
 };
 
 // ============================================================================
@@ -414,6 +425,13 @@ void print_usage(const char* prog_name) {
               << "  --no-binary                Disable binary output\n"
               << "  --no-videos                Disable video output\n"
               << "  --debug                    Enable debug mode\n"
+              << "\n"
+              << "POST-DIC OUTPUT FLAGS:\n"
+              << "  --export-video             Render displacement/strain fields as video\n"
+              << "                             (forces video output on)\n"
+              << "  --export-strains           Write strain fields to the output directory\n"
+              << "  --change-perspective <m>   Output perspective: eulerian (default).\n"
+              << "                             lagrangian is not yet implemented.\n"
               << "  -h, --help                 Show this help message\n\n"
               << "CONFIG FILE FORMAT (config.txt):\n"
               << "  # Comment lines start with #\n"
@@ -474,6 +492,11 @@ int main(int argc, char* argv[]) {
         {"no-binary",       no_argument,       0, 1004},
         {"no-videos",       no_argument,       0, 1005},
         {"debug",           no_argument,       0, 1006},
+        // --- Post-DIC output flags (section 2a). Some are functional wrappers
+        //     over existing behaviour; others are stubs pending dedicated code. ---
+        {"export-video",      no_argument,       0, 1009},  // render displacement field as video
+        {"export-strains",    no_argument,       0, 1010},  // write strain fields to file
+        {"change-perspective",required_argument, 0, 1011},  // perspective transform of output
         {"help",            no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
@@ -525,6 +548,10 @@ int main(int argc, char* argv[]) {
             case 1004: config.save_binary = false; break;
             case 1005: config.save_videos = false; break;
             case 1006: config.debug = true; break;
+            // --- Post-DIC output flags (section 2a) ---
+            case 1009: config.export_video = true; config.save_videos = true; break;
+            case 1010: config.export_strains = true; break;
+            case 1011: config.change_perspective_mode = optarg; break;
             case 'h':
                 print_usage(argv[0]);
                 return 0;
@@ -533,7 +560,46 @@ int main(int argc, char* argv[]) {
                 return 1;
         }
     }
-    
+
+    // ------------------------------------------------------------------------
+    // Post-DIC output flags (section 2a): validate / map to existing behaviour.
+    // Flags whose backing operation already exists are wired to existing config;
+    // flags (or flag *modes*) without dedicated code print a clear notice and
+    // exit cleanly per the spec, without touching the working DIC pipeline.
+    // ------------------------------------------------------------------------
+    if (config.export_video) {
+        // Backing code exists: displacement/strain videos via save_DIC_video /
+        // save_strain_video. --export-video simply forces video output on.
+        std::cout << "[--export-video] enabled: displacement/strain fields will "
+                     "be rendered to video." << std::endl;
+    }
+    if (config.export_strains) {
+        // Backing code exists: strain fields are written as part of the JSON and
+        // binary outputs. --export-strains guarantees at least one is emitted.
+        if (!config.save_json && !config.save_binary) {
+            config.save_binary = true;
+        }
+        std::cout << "[--export-strains] enabled: strain fields will be written "
+                     "to the output directory." << std::endl;
+        // TODO(newversion): add a dedicated standalone strain export format
+        // (e.g. CSV / .mat) instead of relying on the JSON/binary bundle.
+    }
+    if (!config.change_perspective_mode.empty()) {
+        std::string mode = config.change_perspective_mode;
+        std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
+        if (mode == "eulerian") {
+            // Functional: this is exactly what the pipeline already does below.
+            std::cout << "[--change-perspective=eulerian] using Eulerian "
+                         "perspective (default)." << std::endl;
+        } else {
+            // FIXME(newversion): wire up Lagrangian / arbitrary perspective
+            // transforms (see change_perspective_with_inversion in ncorr.h).
+            std::cout << "[--change-perspective=" << config.change_perspective_mode
+                      << "] not yet implemented" << std::endl;
+            return 0;
+        }
+    }
+
     // Resolve ROI path
     std::string roi_path = config.roi_path;
     if (roi_path.empty()) {
@@ -669,10 +735,21 @@ int main(int argc, char* argv[]) {
                 std::cout << "..." << std::endl;
                 
                 DIC_analysis_parallel_input parallel_input(DIC_input, config.seeds_by_region, config.seeds_are_optimized);
-                DIC_output = DIC_analysis_sequential(parallel_input);
+                // FIXME(newversion): DIC_analysis_sequential is overloaded for both
+                // DIC_analysis_input and DIC_analysis_parallel_input; the latter is
+                // implicitly convertible to the former, making a bare call ambiguous.
+                // Select the parallel-input overload explicitly via a function pointer
+                // so the user-provided seeds are honoured.
+                DIC_output = static_cast<DIC_analysis_output(*)(const DIC_analysis_parallel_input&)>(
+                                 &DIC_analysis_sequential)(parallel_input);
             } else {
                 std::cout << "[SEQUENTIAL MODE] Performing DIC analysis with auto-generated seeds..." << std::endl;
-                DIC_output = DIC_analysis_sequential(DIC_input);
+                // FIXME(newversion): same overload ambiguity as above. Here we want
+                // the DIC_analysis_input overload (no user seeds); select it
+                // explicitly via a function pointer.
+                DIC_output = static_cast<DIC_analysis_output(*)(const DIC_analysis_input&,
+                                 const std::vector<SeedParams>&, bool)>(
+                                 &DIC_analysis_sequential)(DIC_input, {}, false);
             }
         } else if (effective_mode == "parallel") {
             if (has_seeds) {
