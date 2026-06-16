@@ -7,6 +7,10 @@
 #include <dirent.h>
 #include <algorithm>
 #include <getopt.h>
+#include <cctype>
+#include <cerrno>
+#include <cstring>
+#include <vector>
 
 using namespace ncorr;
 using json = nlohmann::json;
@@ -234,13 +238,77 @@ void save_as_json(const DIC_analysis_input& dic_input,
 // ============================================================================
 // File discovery functions
 // ============================================================================
+
+// Supported image extensions (lowercase, including the dot). Mirrors the formats
+// OpenCV's imread handles in this build. Keep in sync with the user guide.
+static const std::vector<std::string> kImageExtensions = {
+    ".png", ".tif", ".tiff", ".bmp", ".jpg", ".jpeg"
+};
+
+// Return true if `lower_name` (already lowercased) ends with a supported image
+// extension. Length-safe: never reads out of bounds for short names.
+static bool has_image_extension(const std::string& lower_name) {
+    for (const std::string& ext : kImageExtensions) {
+        if (lower_name.size() > ext.size() &&
+            lower_name.compare(lower_name.size() - ext.size(), ext.size(), ext) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Natural (human) comparison so unpadded numeric frame names sort correctly,
+// e.g. "frame_2.png" < "frame_10.png". Falls back to lexicographic for
+// non-digit runs. Zero-padded names also sort correctly under this rule.
+static bool natural_less(const std::string& a, const std::string& b) {
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (std::isdigit(static_cast<unsigned char>(a[i])) &&
+            std::isdigit(static_cast<unsigned char>(b[j]))) {
+            // Compare two runs of digits by numeric value (skip leading zeros).
+            size_t ai = i, bj = j;
+            while (ai < a.size() && std::isdigit(static_cast<unsigned char>(a[ai]))) ++ai;
+            while (bj < b.size() && std::isdigit(static_cast<unsigned char>(b[bj]))) ++bj;
+            std::string da = a.substr(i, ai - i);
+            std::string db = b.substr(j, bj - j);
+            da.erase(0, da.find_first_not_of('0'));
+            db.erase(0, db.find_first_not_of('0'));
+            if (da.size() != db.size()) return da.size() < db.size();
+            if (da != db) return da < db;
+            i = ai; j = bj;
+        } else {
+            if (a[i] != b[j]) return a[i] < b[j];
+            ++i; ++j;
+        }
+    }
+    return a.size() < b.size();
+}
+
+// Discover the deformed-frame image files inside `folder`.
+//
+// NAMING CONVENTION / EXPECTED LAYOUT:
+//   - The folder contains one image per frame plus (optionally) a ROI mask and a
+//     dedicated reference image.
+//   - Frames should be numbered so they sort in acquisition order. Both
+//     zero-padded ("frame_00.png", "frame_01.png", ...) and unpadded
+//     ("frame_2.png", "frame_10.png", ...) numbering work; ordering uses a
+//     natural (numeric-aware) comparison, not raw lexicographic order.
+//   - Files named "roi.png" and "ref.png" (case-insensitive) are reserved and
+//     excluded from the frame list, as are any files matching the explicitly
+//     supplied `roi_path` / `ref_path` basenames.
+//   - Hidden files (leading '.') and any non-image extension are ignored.
+//   - Supported extensions: .png .tif .tiff .bmp .jpg .jpeg
+//
+// Throws std::runtime_error if `folder` cannot be opened. Returns an empty
+// vector if the folder simply contains no usable frames (the caller reports it).
 std::vector<std::string> discover_frames(const std::string& folder, const std::string& ref_path, const std::string& roi_path) {
     std::vector<std::string> frames;
     DIR* dir = opendir(folder.c_str());
     if (!dir) {
-        throw std::runtime_error("Cannot open folder: " + folder);
+        throw std::runtime_error("Cannot open folder '" + folder +
+                                 "': " + std::strerror(errno));
     }
-    
+
     // Get basenames to exclude
     std::string roi_basename = "";
     std::string ref_basename = "";
@@ -252,45 +320,41 @@ std::vector<std::string> discover_frames(const std::string& folder, const std::s
         size_t pos = ref_path.find_last_of("/\\");
         ref_basename = (pos != std::string::npos) ? ref_path.substr(pos + 1) : ref_path;
     }
-    
+
     struct dirent* entry;
     while ((entry = readdir(dir)) != nullptr) {
         std::string name = entry->d_name;
-        
-        // Skip hidden files and directories
-        if (name[0] == '.') continue;
-        
-        // Check for image extensions
+
+        // Skip empty names (defensive) and hidden files / "." / ".." entries.
+        if (name.empty() || name[0] == '.') continue;
+
+        // Skip nested sub-directories: only regular files are valid frames.
+        std::string full_path = folder + "/" + name;
+        struct stat st;
+        if (stat(full_path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) continue;
+
+        // Check for image extensions (case-insensitive, length-safe).
         std::string lower_name = name;
-        std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
-        
-        bool is_image = (lower_name.length() > 4 && 
-            (lower_name.substr(lower_name.length() - 4) == ".png" ||
-             lower_name.substr(lower_name.length() - 4) == ".jpg" ||
-             lower_name.substr(lower_name.length() - 4) == ".bmp" ||
-             lower_name.substr(lower_name.length() - 5) == ".jpeg" ||
-             lower_name.substr(lower_name.length() - 5) == ".tiff" ||
-             lower_name.substr(lower_name.length() - 4) == ".tif"));
-        
-        if (!is_image) continue;
-        
-        // Skip roi.png by default
+        std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+
+        if (!has_image_extension(lower_name)) continue;
+
+        // Skip reserved roi.png / ref.png by default
         if (lower_name == "roi.png") continue;
-        
-        // Skip ref.png by default
         if (lower_name == "ref.png") continue;
-        
+
         // Skip explicitly specified roi and ref files
         if (!roi_basename.empty() && name == roi_basename) continue;
         if (!ref_basename.empty() && name == ref_basename) continue;
-        
-        frames.push_back(folder + "/" + name);
+
+        frames.push_back(full_path);
     }
     closedir(dir);
-    
-    // Sort frames naturally (handles numbered files)
-    std::sort(frames.begin(), frames.end());
-    
+
+    // Sort frames naturally (handles both padded and unpadded numbered files).
+    std::sort(frames.begin(), frames.end(), natural_less);
+
     return frames;
 }
 
