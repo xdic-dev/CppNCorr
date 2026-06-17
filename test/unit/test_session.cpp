@@ -114,9 +114,8 @@ TEST_CASE("session_dic_parity", "[integration]") {
 
     // (a) Direct file/Image2D + DIC_analysis path.
     std::vector<Image2D> imgs{Image2D(ref_path), Image2D(def_path)};
-    DIC_analysis_input in(imgs, roi, cfg.scalefactor,
-                          INTERP::QUINTIC_BSPLINE_PRECOMPUTE, SUBREGION::CIRCLE,
-                          cfg.subregion_radius, cfg.num_threads,
+    DIC_analysis_input in(imgs, roi, cfg.scalefactor, INTERP::QUINTIC_BSPLINE_PRECOMPUTE,
+                          SUBREGION::CIRCLE, cfg.subregion_radius, cfg.num_threads,
                           DIC_analysis_config::NO_UPDATE, cfg.debug);
     DIC_analysis_output out = DIC_analysis(in);
     REQUIRE(out.disps.size() == 1);
@@ -127,7 +126,8 @@ TEST_CASE("session_dic_parity", "[integration]") {
 
     // (b) In-memory NcorrSession path on the same data.
     NcorrSession session(cfg);
-    session.set_reference(ImageBuffer(ref_bgr.data, ref_bgr.cols, ref_bgr.rows, ref_bgr.channels()));
+    session.set_reference(
+        ImageBuffer(ref_bgr.data, ref_bgr.cols, ref_bgr.rows, ref_bgr.channels()));
     session.set_roi(ImageBuffer(roi_bgr.data, roi_bgr.cols, roi_bgr.rows, roi_bgr.channels()));
     DICResult result = session.process_frame(
         ImageBuffer(def_bgr.data, def_bgr.cols, def_bgr.rows, def_bgr.channels()));
