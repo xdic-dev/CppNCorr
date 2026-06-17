@@ -1,6 +1,13 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 3.14)
 PROJECT(ncorr_library)
 
+# Enforce C++17 project-wide (required for std::optional and modern features).
+# Setting these before any target guarantees every target inherits the standard,
+# in addition to the per-target properties set further down.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 # Include FetchContent fallbacks for systems without root access
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FetchDependencies)
@@ -13,8 +20,8 @@ option(FORCE_FETCH_DEPENDENCIES "Force using FetchContent for all dependencies" 
 # included, since the install directories are searched automatically by g++.
 
 # Set files
-SET(ncorr_src src/ncorr.cpp src/Strain2D.cpp src/Disp2D.cpp src/Data2D.cpp src/ROI2D.cpp src/Image2D.cpp src/Array2D.cpp)
-SET(ncorr_h include/ncorr.h include/Strain2D.h include/Disp2D.h include/Data2D.h include/ROI2D.h include/Image2D.h include/Array2D.h)
+SET(ncorr_src src/ncorr.cpp src/Strain2D.cpp src/Disp2D.cpp src/Data2D.cpp src/ROI2D.cpp src/Image2D.cpp src/Array2D.cpp src/session.cpp src/config.cpp)
+SET(ncorr_h include/ncorr.h include/Strain2D.h include/Disp2D.h include/Data2D.h include/ROI2D.h include/Image2D.h include/Array2D.h include/ncorr/session.h include/ncorr/config.h include/ncorr/ini.h)
 
 # Set include directory
 INCLUDE_DIRECTORIES(include)
@@ -97,3 +104,35 @@ ADD_DEFINITIONS(-DNDEBUG)
 # Install library
 INSTALL(TARGETS ncorr DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 INSTALL(FILES ${ncorr_h} DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# ============================================================================
+# Tests (section 5b) — Catch2 v3 via FetchContent.
+# ----------------------------------------------------------------------------
+# CRITICAL: all test infrastructure (Catch2 FetchContent, enable_testing(),
+# test targets, add_test/CTest) is gated so it ONLY activates when CppNCorr is
+# the TOP-LEVEL project. The parent CPPxDIC project does
+# add_subdirectory(Tools/CppNCorr); without this guard the test/Catch2 logic
+# would leak into and break the parent build.
+#
+# PROJECT_IS_TOP_LEVEL is set automatically by project() on CMake >= 3.21; for
+# older CMake we derive it by comparing the source/binary dirs.
+# ============================================================================
+if(NOT DEFINED PROJECT_IS_TOP_LEVEL)
+    if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+        set(PROJECT_IS_TOP_LEVEL ON)
+    else()
+        set(PROJECT_IS_TOP_LEVEL OFF)
+    endif()
+endif()
+
+# BUILD_TESTING defaults ON only when CppNCorr is top-level. When pulled in as a
+# subdirectory it defaults OFF so the parent is never affected.
+option(BUILD_TESTING "Build the CppNCorr test suite (Catch2)" ${PROJECT_IS_TOP_LEVEL})
+
+if(PROJECT_IS_TOP_LEVEL AND BUILD_TESTING)
+    message(STATUS "CppNCorr: top-level build with testing enabled — configuring Catch2 test suite")
+    enable_testing()
+    include(${CMAKE_CURRENT_SOURCE_DIR}/test/tests.cmake)
+else()
+    message(STATUS "CppNCorr: tests skipped (PROJECT_IS_TOP_LEVEL=${PROJECT_IS_TOP_LEVEL}, BUILD_TESTING=${BUILD_TESTING})")
+endif()

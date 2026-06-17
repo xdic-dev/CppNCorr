@@ -1,12 +1,19 @@
 #include "ncorr.h"
+#include "ncorr/config.h"
+#include "ncorr/frame_reader.h"
 #include <fstream>
 #include <iostream>
 #include <iomanip>
+#include <sstream>
 #include <nlohmann/json.hpp>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <algorithm>
 #include <getopt.h>
+#include <cctype>
+#include <cerrno>
+#include <cstring>
+#include <vector>
 
 using namespace ncorr;
 using json = nlohmann::json;
@@ -57,6 +64,17 @@ struct ProxyConfig {
     bool save_json = true;
     bool save_binary = true;
     bool save_videos = true;
+
+    // --- Post-DIC output flags (section 2a) ---
+    // Explicit named toggles requested on the CLI. These complement the existing
+    // --no-* flags. When the user passes the explicit flag we force the matching
+    // behaviour on; when the backing operation has no dedicated implementation yet
+    // we print a "not yet implemented" notice and exit cleanly.
+    bool export_video   = false;  // alias/forces displacement-field video export
+    bool export_strains = false;  // alias/forces strain-field export
+    // change_perspective: empty = use default (perspective_interp); otherwise the
+    // requested mode. Recognised values: "eulerian". "lagrangian" is not yet wired.
+    std::string change_perspective_mode = "";
 };
 
 // ============================================================================
@@ -83,6 +101,31 @@ DIC_analysis_config parse_dic_config(const std::string& s) {
     if (s == "KEEP_MOST_POINTS") return DIC_analysis_config::KEEP_MOST_POINTS;
     if (s == "REMOVE_BAD_POINTS") return DIC_analysis_config::REMOVE_BAD_POINTS;
     throw std::runtime_error("Unknown DIC config: " + s);
+}
+
+// ============================================================================
+// Override chain (section 4): compiled defaults -> config file -> CLI args
+// ----------------------------------------------------------------------------
+// ProxyConfig carries IO/path/seed fields that the core ncorr::Config does not.
+// The tuneable DIC parameters, however, are seeded from ncorr::Config's compiled
+// defaults and can be overridden by an INI config file (canonical key names) and
+// then by CLI args. apply_core_config() copies the tuneable subset across.
+// ============================================================================
+void apply_core_config(const ncorr::Config& core, ProxyConfig& cfg) {
+    cfg.scalefactor           = core.scalefactor;
+    cfg.subregion_type        = core.subregion_type;
+    cfg.subregion_radius      = core.subregion_radius;
+    cfg.interp_type           = core.interp_type;
+    cfg.strain_subregion_type = core.strain_subregion_type;
+    cfg.strain_radius         = core.strain_radius;
+    cfg.dic_config            = core.dic_config;
+    cfg.num_threads           = core.num_threads;
+    cfg.debug                 = core.debug;
+    cfg.perspective_interp    = core.perspective_interp;
+    cfg.units                 = core.units;
+    cfg.units_per_pixel       = core.units_per_pixel;
+    cfg.alpha                 = core.alpha;
+    cfg.fps                   = core.fps;
 }
 
 // ============================================================================
@@ -221,67 +264,55 @@ void save_as_json(const DIC_analysis_input& dic_input,
 }
 
 // ============================================================================
-// File discovery functions
+// Standalone strain CSV export
+// ----------------------------------------------------------------------------
+// Writes, per strain frame k, three grid CSV files (exx / eyy / exy). Each CSV
+// is the component's reduced-grid array written row-major: one line per row,
+// comma-separated columns. Values inside the strain ROI are printed numerically
+// (9 significant digits); points outside the ROI are written as "nan".
 // ============================================================================
-std::vector<std::string> discover_frames(const std::string& folder, const std::string& ref_path, const std::string& roi_path) {
-    std::vector<std::string> frames;
-    DIR* dir = opendir(folder.c_str());
-    if (!dir) {
-        throw std::runtime_error("Cannot open folder: " + folder);
+void save_strains_csv(const strain_analysis_output& strain_output,
+                      const std::string& dir) {
+    system(("mkdir -p " + dir).c_str());
+
+    auto write_component = [&](const Array2D<double>& arr,
+                               const Array2D<bool>& mask,
+                               const std::string& path) {
+        std::ofstream out(path);
+        out << std::setprecision(9);
+        for (int i = 0; i < arr.height(); ++i) {
+            for (int j = 0; j < arr.width(); ++j) {
+                if (j > 0) out << ",";
+                if (i < mask.height() && j < mask.width() && mask(i, j)) {
+                    out << arr(i, j);
+                } else {
+                    out << "nan";
+                }
+            }
+            out << "\n";
+        }
+    };
+
+    for (std::size_t k = 0; k < strain_output.strains.size(); ++k) {
+        const Strain2D& strain = strain_output.strains[k];
+        const Array2D<bool>& mask = strain.get_roi().get_mask();
+
+        std::ostringstream prefix;
+        prefix << dir << "/strain_" << std::setw(4) << std::setfill('0') << k;
+
+        write_component(strain.get_exx().get_array(), mask, prefix.str() + "_exx.csv");
+        write_component(strain.get_eyy().get_array(), mask, prefix.str() + "_eyy.csv");
+        write_component(strain.get_exy().get_array(), mask, prefix.str() + "_exy.csv");
     }
-    
-    // Get basenames to exclude
-    std::string roi_basename = "";
-    std::string ref_basename = "";
-    if (!roi_path.empty()) {
-        size_t pos = roi_path.find_last_of("/\\");
-        roi_basename = (pos != std::string::npos) ? roi_path.substr(pos + 1) : roi_path;
-    }
-    if (!ref_path.empty()) {
-        size_t pos = ref_path.find_last_of("/\\");
-        ref_basename = (pos != std::string::npos) ? ref_path.substr(pos + 1) : ref_path;
-    }
-    
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr) {
-        std::string name = entry->d_name;
-        
-        // Skip hidden files and directories
-        if (name[0] == '.') continue;
-        
-        // Check for image extensions
-        std::string lower_name = name;
-        std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
-        
-        bool is_image = (lower_name.length() > 4 && 
-            (lower_name.substr(lower_name.length() - 4) == ".png" ||
-             lower_name.substr(lower_name.length() - 4) == ".jpg" ||
-             lower_name.substr(lower_name.length() - 4) == ".bmp" ||
-             lower_name.substr(lower_name.length() - 5) == ".jpeg" ||
-             lower_name.substr(lower_name.length() - 5) == ".tiff" ||
-             lower_name.substr(lower_name.length() - 4) == ".tif"));
-        
-        if (!is_image) continue;
-        
-        // Skip roi.png by default
-        if (lower_name == "roi.png") continue;
-        
-        // Skip ref.png by default
-        if (lower_name == "ref.png") continue;
-        
-        // Skip explicitly specified roi and ref files
-        if (!roi_basename.empty() && name == roi_basename) continue;
-        if (!ref_basename.empty() && name == ref_basename) continue;
-        
-        frames.push_back(folder + "/" + name);
-    }
-    closedir(dir);
-    
-    // Sort frames naturally (handles numbered files)
-    std::sort(frames.begin(), frames.end());
-    
-    return frames;
 }
+
+// ============================================================================
+// File discovery functions
+// ----------------------------------------------------------------------------
+// discover_frames / has_image_extension / natural_less now live in the reusable
+// header include/ncorr/frame_reader.h so they can be unit-tested without
+// compiling this driver. They are pulled in via "using namespace ncorr;" above.
+// ============================================================================
 
 bool file_exists(const std::string& path) {
     struct stat buffer;
@@ -414,6 +445,12 @@ void print_usage(const char* prog_name) {
               << "  --no-binary                Disable binary output\n"
               << "  --no-videos                Disable video output\n"
               << "  --debug                    Enable debug mode\n"
+              << "\n"
+              << "POST-DIC OUTPUT FLAGS:\n"
+              << "  --export-video             Render displacement/strain fields as video\n"
+              << "                             (forces video output on)\n"
+              << "  --export-strains           Write strain fields to the output directory\n"
+              << "  --change-perspective <m>   Output perspective: eulerian (default), lagrangian\n"
               << "  -h, --help                 Show this help message\n\n"
               << "CONFIG FILE FORMAT (config.txt):\n"
               << "  # Comment lines start with #\n"
@@ -448,7 +485,11 @@ void print_usage(const char* prog_name) {
 // ============================================================================
 int main(int argc, char* argv[]) {
     ProxyConfig config;
-    
+
+    // Tier 3 (lowest priority): compiled defaults. Seed the tuneable DIC params
+    // from ncorr::Config so the compiled defaults live in one canonical place.
+    apply_core_config(ncorr::Config{}, config);
+
     // Long options
     static struct option long_options[] = {
         {"folder",          required_argument, 0, 'f'},
@@ -474,6 +515,11 @@ int main(int argc, char* argv[]) {
         {"no-binary",       no_argument,       0, 1004},
         {"no-videos",       no_argument,       0, 1005},
         {"debug",           no_argument,       0, 1006},
+        // --- Post-DIC output flags (section 2a). Some are functional wrappers
+        //     over existing behaviour; others are stubs pending dedicated code. ---
+        {"export-video",      no_argument,       0, 1009},  // render displacement field as video
+        {"export-strains",    no_argument,       0, 1010},  // write strain fields to file
+        {"change-perspective",required_argument, 0, 1011},  // perspective transform of output
         {"help",            no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
@@ -490,12 +536,56 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // Load config file if specified
-    if (!config_file.empty()) {
-        std::cout << "Loading config from: " << config_file << std::endl;
-        config = parse_config_file(config_file);
+    // Tier 2: config file. If none is given on the CLI, fall back to the shipped
+    // config/default.cfg when it exists, so the documented INI defaults apply.
+    std::string effective_config = config_file;
+    if (effective_config.empty() && file_exists("config/default.cfg")) {
+        effective_config = "config/default.cfg";
     }
-    
+
+    if (!effective_config.empty()) {
+        std::cout << "Loading config from: " << effective_config << std::endl;
+        // (a) Legacy short-key parser: handles paths, seeds, IO toggles and the
+        //     historical short tuneable keys (radius, interp, threads, ...).
+        try {
+            config = parse_config_file(effective_config);
+        } catch (const std::exception& e) {
+            // A missing legacy file is non-fatal here; the canonical INI loader
+            // below still runs (and may itself report a real parse error).
+            std::cerr << "Note: " << e.what() << std::endl;
+        }
+        // (b) Canonical INI overlay (section 4): override the tuneable DIC params
+        //     using the exact ncorr::Config field names. This complements the
+        //     legacy short keys above and is the documented override chain.
+        //     Seed the overlay with the values resolved so far (compiled defaults
+        //     plus any legacy values) so only canonical keys present in the file
+        //     are changed.
+        ncorr::Config overlay;
+        overlay.scalefactor           = config.scalefactor;
+        overlay.subregion_type        = config.subregion_type;
+        overlay.subregion_radius      = config.subregion_radius;
+        overlay.interp_type           = config.interp_type;
+        overlay.strain_subregion_type = config.strain_subregion_type;
+        overlay.strain_radius         = config.strain_radius;
+        overlay.dic_config            = config.dic_config;
+        overlay.num_threads           = config.num_threads;
+        overlay.debug                 = config.debug;
+        overlay.perspective_interp    = config.perspective_interp;
+        overlay.units                 = config.units;
+        overlay.units_per_pixel       = config.units_per_pixel;
+        overlay.alpha                 = config.alpha;
+        overlay.fps                   = config.fps;
+        try {
+            if (ncorr::load_config_file(effective_config, overlay)) {
+                apply_core_config(overlay, config);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error in config file '" << effective_config
+                      << "': " << e.what() << std::endl;
+            return 1;
+        }
+    }
+
     // Reset getopt
     optind = 1;
     
@@ -525,6 +615,10 @@ int main(int argc, char* argv[]) {
             case 1004: config.save_binary = false; break;
             case 1005: config.save_videos = false; break;
             case 1006: config.debug = true; break;
+            // --- Post-DIC output flags (section 2a) ---
+            case 1009: config.export_video = true; config.save_videos = true; break;
+            case 1010: config.export_strains = true; break;
+            case 1011: config.change_perspective_mode = optarg; break;
             case 'h':
                 print_usage(argv[0]);
                 return 0;
@@ -533,7 +627,55 @@ int main(int argc, char* argv[]) {
                 return 1;
         }
     }
-    
+
+    // ------------------------------------------------------------------------
+    // Post-DIC output flags (section 2a): validate / map to existing behaviour.
+    // Flags whose backing operation already exists are wired to existing config;
+    // flags (or flag *modes*) without dedicated code print a clear notice and
+    // exit cleanly per the spec, without touching the working DIC pipeline.
+    // ------------------------------------------------------------------------
+    if (config.export_video) {
+        // Backing code exists: displacement/strain videos via save_DIC_video /
+        // save_strain_video. --export-video simply forces video output on.
+        std::cout << "[--export-video] enabled: displacement/strain fields will "
+                     "be rendered to video." << std::endl;
+    }
+    if (config.export_strains) {
+        // Backing code exists: strain fields are written as part of the JSON and
+        // binary outputs. --export-strains guarantees at least one is emitted.
+        if (!config.save_json && !config.save_binary) {
+            config.save_binary = true;
+        }
+        std::cout << "[--export-strains] enabled: strain fields will be written "
+                     "to the output directory." << std::endl;
+    }
+    // Resolve the output perspective. Native DIC output is Lagrangian; the
+    // default (no flag) converts to Eulerian to preserve historical behaviour.
+    bool to_eulerian = true;
+    std::string persp_label = "eulerian";
+    {
+        std::string mode = config.change_perspective_mode;
+        std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
+        if (mode.empty() || mode == "eulerian") {
+            to_eulerian = true;
+            persp_label = "eulerian";
+            if (!config.change_perspective_mode.empty()) {
+                std::cout << "[--change-perspective=eulerian] using Eulerian "
+                             "perspective (default)." << std::endl;
+            }
+        } else if (mode == "lagrangian") {
+            to_eulerian = false;
+            persp_label = "lagrangian";
+            std::cout << "[--change-perspective=lagrangian] keeping native "
+                         "Lagrangian (reference) perspective." << std::endl;
+        } else {
+            std::cerr << "Error: unknown --change-perspective value '"
+                      << config.change_perspective_mode
+                      << "'. Use: eulerian (default) or lagrangian." << std::endl;
+            return 1;
+        }
+    }
+
     // Resolve ROI path
     std::string roi_path = config.roi_path;
     if (roi_path.empty()) {
@@ -667,12 +809,11 @@ int main(int argc, char* argv[]) {
                     std::cout << " (pre-optimized, skipping optimization step)";
                 }
                 std::cout << "..." << std::endl;
-                
-                DIC_analysis_parallel_input parallel_input(DIC_input, config.seeds_by_region, config.seeds_are_optimized);
-                DIC_output = DIC_analysis_sequential(parallel_input);
+
+                DIC_output = DIC_analysis_sequential(DIC_input, config.seeds_by_region, config.seeds_are_optimized);
             } else {
                 std::cout << "[SEQUENTIAL MODE] Performing DIC analysis with auto-generated seeds..." << std::endl;
-                DIC_output = DIC_analysis_sequential(DIC_input);
+                DIC_output = DIC_analysis_sequential(DIC_input, {}, false);
             }
         } else if (effective_mode == "parallel") {
             if (has_seeds) {
@@ -693,10 +834,14 @@ int main(int argc, char* argv[]) {
             throw std::runtime_error("Unknown algorithm mode: " + effective_mode + ". Use: auto, sequential, or parallel");
         }
         
-        // Convert to Eulerian perspective
-        std::cout << "Converting to Eulerian perspective..." << std::endl;
-        DIC_output = change_perspective(DIC_output, parse_interp(config.perspective_interp));
-        
+        // Resolve output perspective. Native DIC output is Lagrangian.
+        if (to_eulerian) {
+            std::cout << "Converting to Eulerian perspective..." << std::endl;
+            DIC_output = change_perspective(DIC_output, parse_interp(config.perspective_interp));
+        } else {
+            std::cout << "Keeping Lagrangian (reference) perspective..." << std::endl;
+        }
+
         // Set units
         DIC_output = set_units(DIC_output, config.units, config.units_per_pixel);
         
@@ -728,31 +873,37 @@ int main(int argc, char* argv[]) {
         
         if (config.save_json) {
             std::cout << "Saving JSON outputs..." << std::endl;
-            save_as_json(DIC_input, DIC_output, strain_input, strain_output, 
+            save_as_json(DIC_input, DIC_output, strain_input, strain_output,
                         config.output_dir + "/save_json");
         }
-        
+
+        if (config.export_strains) {
+            std::string csv_dir = config.output_dir + "/strains_csv";
+            std::cout << "Writing standalone strain CSV files to: " << csv_dir << std::endl;
+            save_strains_csv(strain_output, csv_dir);
+        }
+
         // Create videos
         if (config.save_videos) {
             std::cout << "Creating videos..." << std::endl;
             
-            save_DIC_video(config.output_dir + "/video/v_eulerian.avi",
+            save_DIC_video(config.output_dir + "/video/v_" + persp_label + ".avi",
                           DIC_input, DIC_output, DISP::V,
                           config.alpha, config.fps);
-            
-            save_DIC_video(config.output_dir + "/video/u_eulerian.avi",
+
+            save_DIC_video(config.output_dir + "/video/u_" + persp_label + ".avi",
                           DIC_input, DIC_output, DISP::U,
                           config.alpha, config.fps);
-            
-            save_strain_video(config.output_dir + "/video/eyy_eulerian.avi",
+
+            save_strain_video(config.output_dir + "/video/eyy_" + persp_label + ".avi",
                              strain_input, strain_output, STRAIN::EYY,
                              config.alpha, config.fps);
-            
-            save_strain_video(config.output_dir + "/video/exy_eulerian.avi",
+
+            save_strain_video(config.output_dir + "/video/exy_" + persp_label + ".avi",
                              strain_input, strain_output, STRAIN::EXY,
                              config.alpha, config.fps);
-            
-            save_strain_video(config.output_dir + "/video/exx_eulerian.avi",
+
+            save_strain_video(config.output_dir + "/video/exx_" + persp_label + ".avi",
                              strain_input, strain_output, STRAIN::EXX,
                              config.alpha, config.fps);
         }
