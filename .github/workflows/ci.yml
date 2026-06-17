@@ -82,13 +82,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install clang-format
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-format
+      - name: Install clang-format (pinned)
+        # Pin the exact version: apt ships different clang-format majors across
+        # runner images, which disagree with the version used to format the tree.
+        run: python3 -m pip install --quiet "clang-format==18.1.8"
 
       - name: clang-format --dry-run on changed C/C++ files
         run: |
+          # Always use the pinned pip binary explicitly (the runner image also
+          # ships a different-major clang-format on PATH).
+          CF="$(python3 -c 'import clang_format, os; print(os.path.join(os.path.dirname(clang_format.__file__), "data", "bin", "clang-format"))')"
+          "$CF" --version
           # Determine the base ref to diff against.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="origin/${{ github.base_ref }}"
@@ -107,4 +111,4 @@ jobs:
           fi
           echo "Linting:"; echo "$CHANGED"
           # --dry-run --Werror fails if any file is not formatted.
-          clang-format --dry-run --Werror $CHANGED
+          "$CF" --dry-run --Werror $CHANGED
