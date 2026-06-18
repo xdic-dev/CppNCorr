@@ -6,6 +6,7 @@
  */
 
 #include "ncorr.h"
+#include "ncorr/log.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -59,7 +60,7 @@ namespace details {
         const auto &nlinfo_old = disp.get_roi().get_nlinfo(region_idx);        
         if (nlinfo_old.empty()) {
             // If nlinfo_old is empty then an initial guess cannot be found.
-            std::cerr << "WARNING - d_initial_guess : nlinfo_old of region " << region_idx << " is empty params initial guess cannot be found\n";
+            NLOG_WARN << "WARNING - d_initial_guess : nlinfo_old of region " << region_idx << " is empty params initial guess cannot be found";
             return false;
         }
         
@@ -118,7 +119,7 @@ namespace details {
         
         if (std::isnan(fo_pair.first(0))) {
             // Interpolated out of bounds; return as failure.
-            std::cerr << "WARNING - d_newton : Interpolated out of bounds (first order returns NaN); for old (p1, p2) = " << params(2) << " ," << params(3) << std::endl;
+            NLOG_WARN << "WARNING - d_newton : Interpolated out of bounds (first order returns NaN); for old (p1, p2) = " << params(2) << " ," << params(3);
             return false;
         }
         
@@ -162,7 +163,7 @@ namespace details {
             }
         }
         // Something failed
-        std::cerr << "WARNING - d_newton : hessian failed; for old (p1, p2) = " << params(2) << " ," << params(3) << std::endl;
+        NLOG_WARN << "WARNING - d_newton : hessian failed; for old (p1, p2) = " << params(2) << " ," << params(3);
         return false;
     }
     
@@ -319,7 +320,7 @@ namespace details {
             return true;
         }
         // Something failed
-        std::cerr << "WARNING - sr_inital_guess : ref_template_ssd_inv less than eps; for (p1, p2) = " << params(0) << " ," << params(1) << std::endl;
+        NLOG_WARN << "WARNING - sr_inital_guess : ref_template_ssd_inv less than eps; for (p1, p2) = " << params(0) << " ," << params(1);
         return false;
     }
     
@@ -381,7 +382,7 @@ namespace details {
                             // Note that for some forms of interpolation, the entire array
                             // cannot be interpolated (near boundaries - these values
                             // will be NaNs). Possibly update this later.
-                            std::cout << "INFO - sr_iterative_search: near boundaries interpolation yield NaN; for (p1, p2) = " << p1 << " ," << p2 << std::endl;
+                            NLOG_DEBUG << "INFO - sr_iterative_search: near boundaries interpolation yield NaN; for (p1, p2) = " << p1 << " ," << p2;
                             return false; 
                         }   
                         
@@ -495,7 +496,7 @@ namespace details {
                     
                     if (std::isnan(A_cur_template(p1_shifted, p2_shifted))) {
                         // If interpolated out of range, return false.
-                        std::cout << "INFO - sr_newton: near boundaries interpolation yield NaN; for (p1, p2) = " << p1_shifted << " ," << p2_shifted << std::endl;
+                        NLOG_DEBUG << "INFO - sr_newton: near boundaries interpolation yield NaN; for (p1, p2) = " << p1_shifted << " ," << p2_shifted;
                         return false; 
                     }               
                     
@@ -585,7 +586,7 @@ namespace details {
             }
         }
         // Something failed
-        std::cout << "WARNING - sr_newton: hessian probably failed; for (p1, p2) = " << params(0) << " ," << params(1) << std::endl;
+        NLOG_WARN << "WARNING - sr_newton: hessian probably failed; for (p1, p2) = " << params(0) << " ," << params(1);
         return false;
     }
 }
@@ -1062,9 +1063,9 @@ Data2D update(const Data2D &data, const Disp2D &disp, INTERP interp_type, ROI_UP
     
     // Check for empty ROI after update and warn
     if (roi_new.get_points() == 0) {
-        std::cerr << "WARNING: ROI update in Data2D::update() produced an empty ROI!" << std::endl;
-        std::cerr << "  Original ROI had " << data.get_roi().get_points() << " points." << std::endl;
-        std::cerr << "  Mode: " << (mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+        NLOG_WARN << "WARNING: ROI update in Data2D::update() produced an empty ROI!";
+        NLOG_WARN << "  Original ROI had " << data.get_roi().get_points() << " points.";
+        NLOG_WARN << "  Mode: " << (mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID");
     }
     
     // Get signed distance array for roi_new - this guides queue such that 
@@ -1953,10 +1954,11 @@ Disp2D RGDIC(const Array2D<double> &A_ref,
                                 ROI2D::difference_type r, 
                                 ROI2D::difference_type num_threads,
                                 double cutoff_corrcoef,                
-                                bool debug) { 
+                                bool debug) {
+    ncorr::log::set_debug(debug);
     typedef ROI2D::difference_type                              difference_type;
-    
-    std::cout << "DEBUG: RGDIC called with num_threads=" << num_threads << std::endl;
+
+    NLOG_DEBUG << "DEBUG: RGDIC called with num_threads=" << num_threads;
 
     if (!A_ref.same_size(A_cur)) {
         throw std::invalid_argument("Attempted to perform RGDIC on reference image input of size: " + A_ref.size_2D_string() + 
@@ -2130,9 +2132,10 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
                                                double cutoff_corrcoef,                
                                                bool debug,
                                                const std::vector<SeedParams>& seeds_by_region = {},
-                                               bool seeds_are_optimized = false) { 
+                                               bool seeds_are_optimized = false) {
+    ncorr::log::set_debug(debug);
     typedef ROI2D::difference_type                              difference_type;
-            
+
     if (!A_ref.same_size(A_cur)) {
         throw std::invalid_argument("Attempted to perform RGDIC on reference image input of size: " + A_ref.size_2D_string() + 
                                     " with current image input of size: " + A_cur.size_2D_string() + ". Sizes must be the same.");
@@ -2216,15 +2219,15 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
         Array2D<double> seed_params;
         
         if (use_provided_seeds) {
-            std::cout << "WARNING - Using provided seed for region " << region_idx << std::endl;
+            NLOG_WARN << "WARNING - Using provided seed for region " << region_idx;
             // Use user-provided seed for this region
             if (region_idx < static_cast<difference_type>(seeds_by_region.size())) {
                 const SeedParams& provided_seed = seeds_by_region[region_idx];
-                std::cout << "DEBUG::Provided seed: " << provided_seed.y << " " << provided_seed.x << std::endl;
+                NLOG_DEBUG << "DEBUG::Provided seed: " << provided_seed.y << " " << provided_seed.x;
                 
                 if (seeds_are_optimized) {
                     // Seeds are already optimized - use directly without optimization
-                    std::cout << "DEBUG::Already Optimized seed: " << provided_seed.y << " " << provided_seed.x << std::endl;
+                    NLOG_DEBUG << "DEBUG::Already Optimized seed: " << provided_seed.y << " " << provided_seed.x;
                     seed_params = provided_seed.to_array();
                 } else {
                     // Seeds need optimization - create seed array and optimize
@@ -2244,18 +2247,18 @@ Disp2D RGDIC_without_thread(const Array2D<double> &A_ref,
                     params_buf(8) = 0.0;  // corrcoef (will be computed)
                     params_buf(9) = 0.0;  // diff_norm (will be computed)
 
-                    std::cout << "Params_buf = " << params_buf;
+                    NLOG_DEBUG << "Params_buf = " << params_buf;
                     
                     // Optimize the seed using nloptimizer
                     auto result = sr_nloptimizer(params_buf);
                     if (result.second) {  // converged successfully
                         seed_params = result.first;
                         if (debug) {
-                            std::cout << "DEBUG::Optimized seed: " << seed_params(0) << " " << seed_params(1) << std::endl;
+                            NLOG_DEBUG << "DEBUG::Optimized seed: " << seed_params(0) << " " << seed_params(1);
                         }
 
                     } else {
-                        std::cerr << "Warning - Seed optimization doesn't converge. Use non optimized seed" << std::endl;
+                        NLOG_WARN << "Warning - Seed optimization doesn't converge. Use non optimized seed";
                     }
                     // If optimization failed, seed_params remains empty
                 }
@@ -2415,17 +2418,17 @@ DIC_analysis_input::DIC_analysis_input(const std::vector<Image2D> &imgs,
     // Apply manual overrides if provided (use -1 as sentinel for "not specified")
     if (roi_update_mode_override != static_cast<ROI_UPDATE_MODE>(-1)) {
         this->roi_update_mode = roi_update_mode_override;
-        std::cout << "Manual override: roi_update_mode = " << (roi_update_mode_override == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+        NLOG_INFO << "Manual override: roi_update_mode = " << (roi_update_mode_override == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID");
     }
     if (accumulation_mode_override != static_cast<ACCUMULATION_MODE>(-1)) {
         this->accumulation_mode = accumulation_mode_override;
-        std::cout << "Manual override: accumulation_mode = " << (accumulation_mode_override == ACCUMULATION_MODE::ON_THE_FLY ? "ON_THE_FLY" : "POST_PROCESS") << std::endl;
+        NLOG_INFO << "Manual override: accumulation_mode = " << (accumulation_mode_override == ACCUMULATION_MODE::ON_THE_FLY ? "ON_THE_FLY" : "POST_PROCESS");
     }
     
     // Set save_disps_steps (enforced if debug is true)
     this->save_disps_steps = save_disps_steps_override || debug;
     if (this->save_disps_steps) {
-        std::cout << "Step displacement data will be saved (save_disps_steps=true)" << std::endl;
+        NLOG_INFO << "Step displacement data will be saved (save_disps_steps=true)";
     }
 }  
 
@@ -2743,23 +2746,23 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
         step_disps.resize(DIC_input.imgs.size()-1);
         step_rois.resize(DIC_input.imgs.size()-1);
         step_ref_idx.resize(DIC_input.imgs.size()-1);
-        std::cout << "Using POST_PROCESS (MATLAB-style) accumulation mode." << std::endl;
+        NLOG_INFO << "Using POST_PROCESS (MATLAB-style) accumulation mode.";
     }
-            
-    // Set ROI for the reference image - this gets updated if reference image 
+
+    // Set ROI for the reference image - this gets updated if reference image
     // gets updated. Then, cycle over images and perform DIC.
     ROI2D roi_ref = DIC_input.roi; 
     for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
         // -------------------------------------------------------------------//
         // Perform RGDIC -----------------------------------------------------//
         // -------------------------------------------------------------------//
-        std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
-        std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
-        std::cout << "Current image: " << DIC_input.imgs[cur_idx] << "." << std::endl;
-        
+        NLOG_INFO << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << ".";
+        NLOG_INFO << "Reference image: " << DIC_input.imgs[ref_idx] << ".";
+        NLOG_INFO << "Current image: " << DIC_input.imgs[cur_idx] << ".";
+
         std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
-        
-        auto disps = RGDIC(DIC_input.imgs[ref_idx].get_gs(), 
+
+        auto disps = RGDIC(DIC_input.imgs[ref_idx].get_gs(),
                                DIC_input.imgs[cur_idx].get_gs(), 
                                roi_ref, 
                                DIC_input.scalefactor, 
@@ -2772,7 +2775,7 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
         
         std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
-        std::cout << "Time: " << elapsed_seconds_rgdic.count() << "." << std::endl;
+        NLOG_INFO << "Time: " << elapsed_seconds_rgdic.count() << ".";
         // -------------------------------------------------------------------//
         // -------------------------------------------------------------------//
         // -------------------------------------------------------------------//
@@ -2791,14 +2794,14 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                 auto added_disps = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
                 
                 if (added_disps.get_roi().get_points() == 0) {
-                    std::cerr << "WARNING: add() at frame " << cur_idx << " produced empty ROI!" << std::endl;
-                    std::cerr << "  Previous disp[" << ref_idx-1 << "] had " << DIC_output.disps[ref_idx-1].get_roi().get_points() << " points." << std::endl;
-                    std::cerr << "  Current disps had " << disps.get_roi().get_points() << " points." << std::endl;
-                    std::cerr << "  Using current disps directly instead of combined result." << std::endl;
+                    NLOG_WARN << "WARNING: add() at frame " << cur_idx << " produced empty ROI!";
+                    NLOG_WARN << "  Previous disp[" << ref_idx-1 << "] had " << DIC_output.disps[ref_idx-1].get_roi().get_points() << " points.";
+                    NLOG_WARN << "  Current disps had " << disps.get_roi().get_points() << " points.";
+                    NLOG_WARN << "  Using current disps directly instead of combined result.";
                     DIC_output.disps[cur_idx-1] = disps;
                 } else if (added_disps.get_roi().get_points() < disps.get_roi().get_points() / 2) {
-                    std::cerr << "WARNING: add() at frame " << cur_idx << " lost significant points!" << std::endl;
-                    std::cerr << "  Current disps: " << disps.get_roi().get_points() << ", Combined: " << added_disps.get_roi().get_points() << std::endl;
+                    NLOG_WARN << "WARNING: add() at frame " << cur_idx << " lost significant points!";
+                    NLOG_WARN << "  Current disps: " << disps.get_roi().get_points() << ", Combined: " << added_disps.get_roi().get_points();
                     DIC_output.disps[cur_idx-1] = added_disps;
                 } else {
                     DIC_output.disps[cur_idx-1] = added_disps;
@@ -2814,9 +2817,9 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
         Array2D<double> cc_values = disps.get_cc().get_array()(disps.get_cc().get_roi().get_mask());
         if (!cc_values.empty()) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
-            std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
+            NLOG_INFO << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << ".";
             if (selected_corrcoef > DIC_input.update_corrcoef) {
-                std::cout << "DA::Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
+                NLOG_INFO << "DA::Updating reference image..." << ref_idx << " -> " << cur_idx;
                 auto prev_ref_idx = ref_idx;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
@@ -2825,13 +2828,13 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                 
                 // Check if updated ROI is empty and warn/handle
                 if (roi_ref.get_points() == 0) {
-                    std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
-                    std::cerr << "  Previous ROI had " << prev_roi.get_points() << " points." << std::endl;
-                    std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+                    NLOG_WARN << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!";
+                    NLOG_WARN << "  Previous ROI had " << prev_roi.get_points() << " points.";
+                    NLOG_WARN << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID");
                     // Revert to previous ROI to prevent crash in subsequent analysis
                     roi_ref = prev_roi;
                     ref_idx = prev_ref_idx;  // Keep previous reference
-                    std::cerr << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis." << std::endl;
+                    NLOG_WARN << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis.";
                 }
                 
                 if (DIC_input.debug) {
@@ -2842,7 +2845,7 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                     cv::imwrite("roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
                     cv::imwrite("roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
                     cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
-                    std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
+                    NLOG_DEBUG << "DEBUG::Saved difference image for frame " << cur_idx;
                 }
             }
         }     
@@ -2850,7 +2853,7 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
     
     // POST_PROCESS mode: Combine step displacements at the end
     if (use_post_process) {
-        std::cout << std::endl << "Post-processing: Combining step displacements..." << std::endl;
+        NLOG_INFO << std::endl << "Post-processing: Combining step displacements...";
         
         for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
             // Find chain of step displacements needed to reach this frame
@@ -2877,13 +2880,13 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
                 auto combined = add_with_rois(chain_disps, chain_rois, DIC_input.interp_type);
                 
                 if (combined.get_roi().get_points() == 0) {
-                    std::cerr << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!" << std::endl;
-                    std::cerr << "  Using last step displacement instead." << std::endl;
+                    NLOG_WARN << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!";
+                    NLOG_WARN << "  Using last step displacement instead.";
                     DIC_output.disps[cur_idx-1] = step_disps[cur_idx-1];
                 } else {
                     DIC_output.disps[cur_idx-1] = combined;
-                    std::cout << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps, " 
-                              << combined.get_roi().get_points() << " valid points." << std::endl;
+                    NLOG_INFO << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps, "
+                              << combined.get_roi().get_points() << " valid points.";
                 }
             }
         }
@@ -2898,13 +2901,13 @@ DIC_analysis_output DIC_analysis(const DIC_analysis_input &DIC_input) {
         
         std::string step_filename = "DIC_analysis_step_data.bin";
         save(step_data, step_filename);
-        std::cout << "Step displacement data saved to " << step_filename << std::endl;
+        NLOG_INFO << "Step displacement data saved to " << step_filename;
     }
     
     // End timer for entire analysis
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
     std::chrono::duration<double> elapsed_seconds_analysis = end_analysis - start_analysis;
-    std::cout << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << "." << std::endl;
+    NLOG_INFO << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << ".";
         
     return DIC_output;
 }
@@ -2935,7 +2938,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
         step_disps.resize(DIC_input.imgs.size()-1);
         step_rois.resize(DIC_input.imgs.size()-1);
         step_ref_idx.resize(DIC_input.imgs.size()-1);
-        std::cout << "Using POST_PROCESS (MATLAB-style) accumulation mode." << std::endl;
+        NLOG_INFO << "Using POST_PROCESS (MATLAB-style) accumulation mode.";
     }
             
     ROI2D roi_ref = DIC_input.roi;
@@ -2943,13 +2946,13 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
     std::vector<SeedParams> current_seeds = seeds_by_region;
     bool current_seeds_optimized = seeds_are_optimized;
     for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
-        std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
-        std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
-        std::cout << "Current image: " << DIC_input.imgs[cur_idx] << "." << std::endl;
+        NLOG_INFO << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << ".";
+        NLOG_INFO << "Reference image: " << DIC_input.imgs[ref_idx] << ".";
+        NLOG_INFO << "Current image: " << DIC_input.imgs[cur_idx] << ".";
         
         std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
         
-        std::cout << "Debug:: " << current_seeds[0].x << " " << current_seeds[0].y << std::endl;
+        NLOG_DEBUG << "Debug:: " << current_seeds[0].x << " " << current_seeds[0].y;
         auto disps = RGDIC_without_thread(DIC_input.imgs[ref_idx].get_gs(), 
                                DIC_input.imgs[cur_idx].get_gs(), 
                                roi_ref, 
@@ -2964,7 +2967,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
         
         std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
-        std::cout << "Time: " << elapsed_seconds_rgdic.count() << "." << std::endl;
+        NLOG_INFO << "Time: " << elapsed_seconds_rgdic.count() << ".";
         
         // Store displacements based on accumulation mode
         if (use_post_process) {
@@ -2976,7 +2979,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
             if (ref_idx > 0) {
                 auto added_disps = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
                 if (added_disps.get_roi().get_points() == 0) {
-                    std::cerr << "WARNING: add() at frame " << cur_idx << " produced empty ROI! Using current disps." << std::endl;
+                    NLOG_WARN << "WARNING: add() at frame " << cur_idx << " produced empty ROI! Using current disps.";
                     DIC_output.disps[cur_idx-1] = disps;
                 } else {
                     DIC_output.disps[cur_idx-1] = added_disps;
@@ -2989,9 +2992,9 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
         Array2D<double> cc_values = disps.get_cc().get_array()(disps.get_cc().get_roi().get_mask());
         if (!cc_values.empty()) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
-            std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
+            NLOG_INFO << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << ".";
             if (selected_corrcoef > DIC_input.update_corrcoef) {
-                std::cout << "DAS::Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
+                NLOG_INFO << "DAS::Updating reference image..." << ref_idx << " -> " << cur_idx;
                 auto prev_ref_idx = ref_idx;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
@@ -3040,24 +3043,24 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
                     if (!updated_seeds.empty()) {
                         current_seeds = updated_seeds;
                         current_seeds_optimized = false;  // Seeds need re-optimization with new reference
-                        std::cout << "  Seeds propagated: " << updated_seeds.size() << "/" << seeds_by_region.size() << " remain in updated ROI." << std::endl;
+                        NLOG_INFO << "  Seeds propagated: " << updated_seeds.size() << "/" << seeds_by_region.size() << " remain in updated ROI.";
                     } else {
-                        std::cerr << "  WARNING: No seeds remain in updated ROI. Clearing seeds (auto-detect will be used)." << std::endl;
+                        NLOG_WARN << "  WARNING: No seeds remain in updated ROI. Clearing seeds (auto-detect will be used).";
                         current_seeds.clear();
                     }
                 }
                 
                 // Check if updated ROI is empty and warn/handle
                 if (false && roi_ref.get_points() == 0) {
-                    std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
-                    std::cerr << "  Previous ROI had " << prev_roi.get_points() << " points." << std::endl;
-                    std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+                    NLOG_WARN << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!";
+                    NLOG_WARN << "  Previous ROI had " << prev_roi.get_points() << " points.";
+                    NLOG_WARN << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID");
                     // Revert to previous ROI to prevent crash in subsequent analysis
                     roi_ref = prev_roi;
                     ref_idx = prev_ref_idx;  // Keep previous reference
                     current_seeds = seeds_by_region;  // Revert seeds too
                     current_seeds_optimized = seeds_are_optimized;
-                    std::cerr << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis." << std::endl;
+                    NLOG_WARN << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis.";
                 }
                 
                 if (DIC_input.debug) {
@@ -3068,7 +3071,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
                     cv::imwrite("roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
                     cv::imwrite("roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
                     cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
-                    std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
+                    NLOG_DEBUG << "DEBUG::Saved difference image for frame " << cur_idx;
                 }
             }
         }     
@@ -3076,7 +3079,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
     
     // POST_PROCESS mode: Combine step displacements at the end
     if (use_post_process) {
-        std::cout << std::endl << "Post-processing: Combining step displacements..." << std::endl;
+        NLOG_INFO << std::endl << "Post-processing: Combining step displacements...";
         for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
             std::vector<Disp2D> chain_disps;
             std::vector<ROI2D> chain_rois;
@@ -3092,11 +3095,11 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
             } else {
                 auto combined = add_with_rois(chain_disps, chain_rois, DIC_input.interp_type);
                 if (combined.get_roi().get_points() == 0) {
-                    std::cerr << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!" << std::endl;
+                    NLOG_WARN << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!";
                     DIC_output.disps[cur_idx-1] = step_disps[cur_idx-1];
                 } else {
                     DIC_output.disps[cur_idx-1] = combined;
-                    std::cout << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps." << std::endl;
+                    NLOG_INFO << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps.";
                 }
             }
         }
@@ -3111,12 +3114,12 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_input &DIC_input,
         
         std::string step_filename = "DIC_analysis_sequential_step_data.bin";
         save(step_data, step_filename);
-        std::cout << "Step displacement data saved to " << step_filename << std::endl;
+        NLOG_INFO << "Step displacement data saved to " << step_filename;
     }
     
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
     std::chrono::duration<double> elapsed_seconds_analysis = end_analysis - start_analysis;
-    std::cout << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << "." << std::endl;
+    NLOG_INFO << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << ".";
         
     return DIC_output;
 }
@@ -3149,7 +3152,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
         step_disps.resize(DIC_input.imgs.size()-1);
         step_rois.resize(DIC_input.imgs.size()-1);
         step_ref_idx.resize(DIC_input.imgs.size()-1);
-        std::cout << "Using POST_PROCESS (MATLAB-style) accumulation mode." << std::endl;
+        NLOG_INFO << "Using POST_PROCESS (MATLAB-style) accumulation mode.";
     }
             
     ROI2D roi_ref = DIC_input.roi;
@@ -3157,9 +3160,9 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
     std::vector<SeedParams> current_seeds = parallel_input.seeds_by_region;
     bool current_seeds_optimized = parallel_input.seeds_are_optimized;
     for (difference_type ref_idx = 0, cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {        
-        std::cout << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << "." << std::endl;
-        std::cout << "Reference image: " << DIC_input.imgs[ref_idx] << "." << std::endl;
-        std::cout << "Current image: " << DIC_input.imgs[cur_idx] << "." << std::endl;
+        NLOG_INFO << std::endl << "Processing displacement field " << cur_idx << " of " << DIC_input.imgs.size() - 1 << ".";
+        NLOG_INFO << "Reference image: " << DIC_input.imgs[ref_idx] << ".";
+        NLOG_INFO << "Current image: " << DIC_input.imgs[cur_idx] << ".";
         
         std::chrono::time_point<std::chrono::system_clock> start_rgdic = std::chrono::system_clock::now();
         
@@ -3177,7 +3180,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
         
         std::chrono::time_point<std::chrono::system_clock> end_rgdic = std::chrono::system_clock::now();
         std::chrono::duration<double> elapsed_seconds_rgdic = end_rgdic - start_rgdic;
-        std::cout << "Time: " << elapsed_seconds_rgdic.count() << "." << std::endl;
+        NLOG_INFO << "Time: " << elapsed_seconds_rgdic.count() << ".";
         
         // Store displacements based on accumulation mode
         if (use_post_process) {
@@ -3189,7 +3192,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
             if (ref_idx > 0) {
                 auto added_disps = add(std::vector<Disp2D>({ DIC_output.disps[ref_idx-1], disps }), DIC_input.interp_type);
                 if (added_disps.get_roi().get_points() == 0) {
-                    std::cerr << "WARNING: add() at frame " << cur_idx << " produced empty ROI! Using current disps." << std::endl;
+                    NLOG_WARN << "WARNING: add() at frame " << cur_idx << " produced empty ROI! Using current disps.";
                     DIC_output.disps[cur_idx-1] = disps;
                 } else {
                     DIC_output.disps[cur_idx-1] = added_disps;
@@ -3202,9 +3205,9 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
         Array2D<double> cc_values = disps.get_cc().get_array()(disps.get_cc().get_roi().get_mask());
         if (!cc_values.empty()) {
             double selected_corrcoef = prctile(cc_values, DIC_input.prctile_corrcoef);
-            std::cout << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << "." << std::endl;
+            NLOG_INFO << "Selected correlation coefficient value: " << selected_corrcoef << ". Correlation coefficient update value: " << DIC_input.update_corrcoef << ".";
             if (selected_corrcoef > DIC_input.update_corrcoef) {
-                std::cout << "DASP::Updating reference image..." << ref_idx << " -> " << cur_idx << std::endl;
+                NLOG_INFO << "DASP::Updating reference image..." << ref_idx << " -> " << cur_idx;
                 auto prev_ref_idx = ref_idx;
                 // Update the reference image index as well as the reference roi
                 ref_idx = cur_idx;
@@ -3249,24 +3252,24 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
                     if (!updated_seeds.empty()) {
                         current_seeds = updated_seeds;
                         current_seeds_optimized = false;
-                        std::cout << "  Seeds propagated: " << updated_seeds.size() << "/" << parallel_input.seeds_by_region.size() << " remain in updated ROI." << std::endl;
+                        NLOG_INFO << "  Seeds propagated: " << updated_seeds.size() << "/" << parallel_input.seeds_by_region.size() << " remain in updated ROI.";
                     } else {
-                        std::cerr << "  WARNING: No seeds remain in updated ROI. Clearing seeds (auto-detect will be used)." << std::endl;
+                        NLOG_WARN << "  WARNING: No seeds remain in updated ROI. Clearing seeds (auto-detect will be used).";
                         current_seeds.clear();
                     }
                 }
                 
                 // Check if updated ROI is empty and warn/handle
                 if (roi_ref.get_points() == 0) {
-                    std::cerr << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!" << std::endl;
-                    std::cerr << "  Previous ROI had " << prev_roi.get_points() << " points." << std::endl;
-                    std::cerr << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID") << std::endl;
+                    NLOG_WARN << "WARNING: ROI update at frame " << cur_idx << " produced an empty ROI!";
+                    NLOG_WARN << "  Previous ROI had " << prev_roi.get_points() << " points.";
+                    NLOG_WARN << "  Mode: " << (DIC_input.roi_update_mode == ROI_UPDATE_MODE::SKIP_ALL ? "SKIP_ALL" : "SKIP_INVALID");
                     // Revert to previous ROI and seeds to prevent crash
                     roi_ref = prev_roi;
                     ref_idx = prev_ref_idx;
                     current_seeds = parallel_input.seeds_by_region;
                     current_seeds_optimized = parallel_input.seeds_are_optimized;
-                    std::cerr << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis." << std::endl;
+                    NLOG_WARN << "  Reverting to previous ROI (frame " << ref_idx << ") to continue analysis.";
                 }
                 
                 if (DIC_input.debug) {
@@ -3277,7 +3280,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
                     cv::imwrite("roi_" + std::to_string(cur_idx) + "_prev.png", prev_img);
                     cv::imwrite("roi_" + std::to_string(cur_idx) + "_curr.png", curr_img);
                     cv::imwrite("diff_roi_" + std::to_string(cur_idx) + ".png", diff);
-                    std::cout << "DEBUG::Saved difference image for frame " << cur_idx << std::endl;
+                    NLOG_DEBUG << "DEBUG::Saved difference image for frame " << cur_idx;
                 }
             }
         }     
@@ -3285,7 +3288,7 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
     
     // POST_PROCESS mode: Combine step displacements at the end
     if (use_post_process) {
-        std::cout << std::endl << "Post-processing: Combining step displacements..." << std::endl;
+        NLOG_INFO << std::endl << "Post-processing: Combining step displacements...";
         for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
             std::vector<Disp2D> chain_disps;
             std::vector<ROI2D> chain_rois;
@@ -3301,11 +3304,11 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
             } else {
                 auto combined = add_with_rois(chain_disps, chain_rois, DIC_input.interp_type);
                 if (combined.get_roi().get_points() == 0) {
-                    std::cerr << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!" << std::endl;
+                    NLOG_WARN << "WARNING: Post-process add_with_rois for frame " << cur_idx << " produced empty ROI!";
                     DIC_output.disps[cur_idx-1] = step_disps[cur_idx-1];
                 } else {
                     DIC_output.disps[cur_idx-1] = combined;
-                    std::cout << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps." << std::endl;
+                    NLOG_INFO << "Frame " << cur_idx << ": Combined " << chain_disps.size() << " steps.";
                 }
             }
         }
@@ -3320,12 +3323,12 @@ DIC_analysis_output DIC_analysis_sequential(const DIC_analysis_parallel_input &p
         
         std::string step_filename = "DIC_analysis_sequential_seeds_step_data.bin";
         save(step_data, step_filename);
-        std::cout << "Step displacement data saved to " << step_filename << std::endl;
+        NLOG_INFO << "Step displacement data saved to " << step_filename;
     }
     
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
     std::chrono::duration<double> elapsed_seconds_analysis = end_analysis - start_analysis;
-    std::cout << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << "." << std::endl;
+    NLOG_INFO << std::endl << "Total DIC analysis time: " << elapsed_seconds_analysis.count() << ".";
         
     return DIC_output;
 }
@@ -3384,9 +3387,9 @@ DIC_analysis_output change_perspective(const DIC_analysis_output &DIC_output, IN
     DIC_output_updated.units_per_pixel = DIC_output.units_per_pixel;
     
     // Cycle over displacement fields and convert
-    std::cout << std::endl << "Changing perspective..." << std::endl;
+    NLOG_INFO << std::endl << "Changing perspective...";
     for (difference_type disp_idx = 0; disp_idx < difference_type(DIC_output.disps.size()); ++disp_idx) {
-        std::cout << "Displacement field " << disp_idx+1 << " of " << DIC_output.disps.size() << "." << std::endl;       
+        NLOG_INFO << "Displacement field " << disp_idx+1 << " of " << DIC_output.disps.size() << ".";
         DIC_output_updated.disps.push_back(details::update(DIC_output.disps[disp_idx], interp_type));
     }
     
@@ -3418,9 +3421,9 @@ DIC_analysis_output change_perspective_with_inversion(const DIC_analysis_output 
     DIC_output_updated.units_per_pixel = DIC_output.units_per_pixel;
     
     // Cycle over displacement fields and convert
-    std::cout << std::endl << "Changing perspective with sign inversion (Matlab-compatible)..." << std::endl;
+    NLOG_INFO << std::endl << "Changing perspective with sign inversion (Matlab-compatible)...";
     for (difference_type disp_idx = 0; disp_idx < difference_type(DIC_output.disps.size()); ++disp_idx) {
-        std::cout << "Displacement field " << disp_idx+1 << " of " << DIC_output.disps.size() << "." << std::endl;
+        NLOG_INFO << "Displacement field " << disp_idx+1 << " of " << DIC_output.disps.size() << ".";
         
         // Apply perspective conversion via interpolation
         Disp2D disp_eulerian = details::update(DIC_output.disps[disp_idx], interp_type);
@@ -3490,7 +3493,7 @@ DIC_analysis_output filter_by_correlation(const DIC_analysis_output &DIC_output,
     DIC_output_filtered.units = DIC_output.units;
     DIC_output_filtered.units_per_pixel = DIC_output.units_per_pixel;
     
-    std::cout << std::endl << "Filtering by correlation coefficient (threshold: " << cutoff_corrcoef << ")..." << std::endl;
+    NLOG_INFO << std::endl << "Filtering by correlation coefficient (threshold: " << cutoff_corrcoef << ")...";
     
     // Process each displacement field
     for (difference_type disp_idx = 0; disp_idx < difference_type(DIC_output.disps.size()); ++disp_idx) {
@@ -3516,12 +3519,12 @@ DIC_analysis_output filter_by_correlation(const DIC_analysis_output &DIC_output,
             }
         }
         
-        std::cout << "  Displacement " << disp_idx+1 << ": kept " << points_kept 
-                  << " / " << points_total << " points";
-        if (points_total > 0) {
-            std::cout << " (" << (100.0 * points_kept / points_total) << "%)";
-        }
-        std::cout << "." << std::endl;
+        NLOG_INFO << "  Displacement " << disp_idx+1 << ": kept " << points_kept
+                  << " / " << points_total << " points"
+                  << (points_total > 0
+                          ? " (" + std::to_string(100.0 * points_kept / points_total) + "%)"
+                          : std::string())
+                  << ".";
         
         // Create new ROI with filtered mask
         ROI2D roi_filtered(std::move(mask_filtered));
@@ -3793,9 +3796,9 @@ strain_analysis_output strain_analysis(const strain_analysis_input &strain_input
     strain_analysis_output strain_output;
 
     // Cycle over each displacement field and calculate corresponding strains
-    std::cout << std::endl << "Processing strain fields..." << std::endl;
-    for (difference_type disp_idx = 0; disp_idx < difference_type(strain_input.DIC_output.disps.size()); ++disp_idx) {        
-        std::cout << "Strain field " << disp_idx+1 << " of " << strain_input.DIC_output.disps.size() << "." << std::endl;        
+    NLOG_INFO << std::endl << "Processing strain fields...";
+    for (difference_type disp_idx = 0; disp_idx < difference_type(strain_input.DIC_output.disps.size()); ++disp_idx) {
+        NLOG_INFO << "Strain field " << disp_idx+1 << " of " << strain_input.DIC_output.disps.size() << ".";
         // Calculate strain field for this Disp2D
         strain_output.strains.push_back(LS_strain(strain_input.DIC_output.disps[disp_idx], 
                                                   strain_input.DIC_output.perspective_type,
@@ -4233,14 +4236,14 @@ void save_ncorr_data_over_img_video(const std::string &filename,
     
     // All other parameters will be checked when calling cv_ncorr_data_over_img()
 
-    std::cout << std::endl << "Saving video: " << filename << "..." << std::endl;
+    NLOG_INFO << std::endl << "Saving video: " << filename << "...";
 
     // Initialize video    
     cv::VideoWriter output_video;  
     
     // Cycle over data and save
     for (difference_type data_idx = 0; data_idx < difference_type(data.size()); ++data_idx) {
-        std::cout << "Frame " << data_idx+1 << " of " << data.size() << "." << std::endl;
+        NLOG_INFO << "Frame " << data_idx+1 << " of " << data.size() << ".";
         
         auto cv_data_img = details::cv_ncorr_data_over_img(imgs.size() == 1 ? imgs.front() : imgs[data_idx], 
                                                            data[data_idx], 
@@ -4566,7 +4569,7 @@ Disp2D compute_displacements(
     // Must form union with valid points
     auto roi_valid = roi_reduced.form_union(A_vp); 
     if (debug) {
-        std::cout << "RGDIC completed with manual seed" << std::endl;
+        NLOG_DEBUG << "RGDIC completed with manual seed";
     }   
     return Disp2D(std::move(A_v), std::move(A_u), std::move(A_cc), roi_valid, scalefactor);
 }
@@ -4589,8 +4592,8 @@ std::vector<SeedComputationData> compute_only_seed_points(
     std::vector<SeedComputationData> selected_data;
 
     if (debug) {
-        std::cout << "\n=== Compute seed parameters for all frames with ROI updates ===> ";
-        std::cout << "\n starting with " << seeds_by_region.size() << " seeds" << std::endl;
+        NLOG_DEBUG << "\n=== Compute seed parameters for all frames with ROI updates ===> ";
+        NLOG_DEBUG << "\n starting with " << seeds_by_region.size() << " seeds";
     }
     
     // Start with initial reference and ROI
@@ -4603,7 +4606,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
         const Array2D<double>& A_cur = A_curs[idx];
         
         if (debug) {
-            std::cout << "\n=== Seeding analyzing frame " << (idx + 1) << " ===> ";
+            NLOG_DEBUG << "\n=== Seeding analyzing frame " << (idx + 1) << " ===> ";
         }
 
         // Get subregion nonlinear optimizer
@@ -4624,7 +4627,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
         if (seed_results.success) {
             // Seed analysis successful - store data
             if (debug) {
-                std::cout << "Successful!" << std::endl;
+                NLOG_DEBUG << "Successful!";
             }
             
             selected_data.emplace_back(roi_current, seed_results.seeds, sr_nloptimizer);
@@ -4632,7 +4635,7 @@ std::vector<SeedComputationData> compute_only_seed_points(
         } else {
             // Seed analysis failed - update reference and propagate seeds
             if (debug) {
-                std::cout << "Failed! Updating reference ===>" << std::endl;
+                NLOG_DEBUG << "Failed! Updating reference ===>";
             }
 
             auto A_prev = A_curs[idx-1];
@@ -4661,13 +4664,13 @@ std::vector<SeedComputationData> compute_only_seed_points(
             seeds_current = propagate_seeds(prev_seedparams, scalefactor);
             
             if (debug) {
-                std::cout << "Reference updated, seeds propagated <====" << std::endl;
+                NLOG_DEBUG << "Reference updated, seeds propagated <====";
             }
         }
     }
     
     if (debug) {
-        std::cout << "\nComputed seed parameters for " << selected_data.size() << " frames" << std::endl;
+        NLOG_DEBUG << "\nComputed seed parameters for " << selected_data.size() << " frames";
     }
     
     return selected_data;
@@ -4746,7 +4749,7 @@ SeedAnalysisResult analyze_seeds(
         
         if (!result_pair.second) {
             if (debug) {
-                std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> global failed" << std::endl;
+                NLOG_DEBUG << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> global failed";
             }
             result.success = false;
             continue;
@@ -4758,7 +4761,7 @@ SeedAnalysisResult analyze_seeds(
 
         if (!result_iter.second) {
             if (debug) {
-                std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> iterative search failed" << std::endl;
+                NLOG_DEBUG << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> iterative search failed";
             }
             result.success = false;
             continue;
@@ -4787,9 +4790,9 @@ SeedAnalysisResult analyze_seeds(
         // Check quality thresholds
         if (seed_result.corrcoef > cutoff_max_corrcoef || convergence.diffnorm > cutoff_max_diffnorm) {
             if (debug) {
-                std::cout << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> corrcoef: " << seed_result.corrcoef << ", diffnorm: " << convergence.diffnorm << std::endl;
+                NLOG_DEBUG << region_idx << ": Seed analysis failed at seed " << seed_pos.x << ", " << seed_pos.y << "=> corrcoef: " << seed_result.corrcoef << ", diffnorm: " << convergence.diffnorm;
             }
-            std::cout << result.success << std::endl;
+            NLOG_DEBUG << result.success;
             result.success = false; //TODO: Solve this
         }
         region_idx++;
@@ -4924,8 +4927,8 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
             const auto& predicted_seed = predicted_seeds[region_idx];
             if (!matlab_seed_matches_region(roi_reduced, predicted_seed, DIC_input.scalefactor, region_idx)) {
                 if (DIC_input.debug) {
-                    std::cout << "matlab_DIC_analysis: seed for region " << region_idx
-                              << " is outside its ROI at frame " << cur_idx << "." << std::endl;
+                    NLOG_DEBUG << "matlab_DIC_analysis: seed for region " << region_idx
+                              << " is outside its ROI at frame " << cur_idx << ".";
                 }
                 frame_success = false;
                 break;
@@ -4935,8 +4938,8 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
             auto global_result = sr_nloptimizer.global(params_init);
             if (!global_result.second) {
                 if (DIC_input.debug) {
-                    std::cout << "matlab_DIC_analysis: global seed optimization failed for region "
-                              << region_idx << " at frame " << cur_idx << "." << std::endl;
+                    NLOG_DEBUG << "matlab_DIC_analysis: global seed optimization failed for region "
+                              << region_idx << " at frame " << cur_idx << ".";
                 }
                 frame_success = false;
                 break;
@@ -4955,12 +4958,12 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
                 iteration_saturated ||
                 !matlab_seed_matches_region(roi_reduced, optimized_seed, DIC_input.scalefactor, region_idx)) {
                 if (DIC_input.debug) {
-                    std::cout << "matlab_DIC_analysis: seed quality failed for region " << region_idx
+                    NLOG_DEBUG << "matlab_DIC_analysis: seed quality failed for region " << region_idx
                               << " at frame " << cur_idx
                               << " corrcoef=" << optimized_seed.corrcoef
                               << " diffnorm=" << diffnorm
                               << " iterations=" << num_iterations
-                              << " saturated=" << (iteration_saturated ? "yes" : "no") << "." << std::endl;
+                              << " saturated=" << (iteration_saturated ? "yes" : "no") << ".";
                 }
                 frame_success = false;
                 break;
@@ -4971,7 +4974,7 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
 
         if (!frame_success || !matlab_seed_positions_are_unique(optimized_seeds, DIC_input.scalefactor)) {
             if (DIC_input.debug) {
-                std::cout << "matlab_DIC_analysis: stopping seed schedule at frame " << cur_idx << "." << std::endl;
+                NLOG_DEBUG << "matlab_DIC_analysis: stopping seed schedule at frame " << cur_idx << ".";
             }
             break;
         }
@@ -5032,13 +5035,12 @@ std::vector<Disp2D> matlab_run_segment_dic(const DIC_analysis_parallel_input& in
     }
 
     const difference_type requested_threads = std::min(num_frames, DIC_input.num_threads);
-    std::cout << "\n[matlab_run_segment_dic] Parallel dispatch:"
+    NLOG_DEBUG << "\n[matlab_run_segment_dic] Parallel dispatch:"
               << "\n  num_frames       = " << num_frames
               << "\n  DIC num_threads  = " << DIC_input.num_threads
               << "\n  OMP_NUM_THREADS  = " << (std::getenv("OMP_NUM_THREADS") ? std::getenv("OMP_NUM_THREADS") : "not set")
               << "\n  omp_get_max_threads() = " << omp_get_max_threads()
-              << "\n  Requesting       = " << requested_threads << " threads"
-              << std::endl;
+              << "\n  Requesting       = " << requested_threads << " threads";
 
     std::vector<double> per_thread_seconds(requested_threads, 0.0);
     std::vector<long>   per_thread_frames (requested_threads, 0);
@@ -5057,25 +5059,25 @@ std::vector<Disp2D> matlab_run_segment_dic(const DIC_analysis_parallel_input& in
         per_thread_frames [tid] += 1;
         #pragma omp critical
         {
-            std::cout << "  [segment_dic] frame " << frame_idx
+            NLOG_DEBUG << "  [segment_dic] frame " << frame_idx
                       << " on thread " << tid << " / " << nthr
-                      << " took " << dt << " s" << std::endl;
+                      << " took " << dt << " s";
         }
     }
 
     const double t_wall = omp_get_wtime() - t_wall_begin;
     double total_cpu = 0.0;
-    std::cout << "[matlab_run_segment_dic] per-thread summary:" << std::endl;
+    NLOG_DEBUG << "[matlab_run_segment_dic] per-thread summary:";
     for (int t = 0; t < requested_threads; ++t) {
-        std::cout << "  thread " << t
+        NLOG_DEBUG << "  thread " << t
                   << ": " << per_thread_frames[t] << " frames, "
-                  << per_thread_seconds[t] << " s" << std::endl;
+                  << per_thread_seconds[t] << " s";
         total_cpu += per_thread_seconds[t];
     }
-    std::cout << "  wall = " << t_wall << " s, sum-of-threads = "
+    NLOG_DEBUG << "  wall = " << t_wall << " s, sum-of-threads = "
               << total_cpu << " s, speedup = "
               << (t_wall > 0.0 ? total_cpu / t_wall : 0.0)
-              << " (ideal " << requested_threads << ")" << std::endl;
+              << " (ideal " << requested_threads << ")";
 
     return segment_disps;
 }
@@ -5154,9 +5156,9 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
 
         const difference_type segment_end_idx = ref_idx + difference_type(segment.seeds_by_frame.size());
         if (DIC_input.debug) {
-            std::cout << "matlab_DIC_analysis: processed segment "
+            NLOG_DEBUG << "matlab_DIC_analysis: processed segment "
                       << (ref_idx + 1) << " -> " << (segment_end_idx + 1)
-                      << " (" << segment.seeds_by_frame.size() << " frame(s))." << std::endl;
+                      << " (" << segment.seeds_by_frame.size() << " frame(s)).";
         }
 
         ++num_segments;
@@ -5183,8 +5185,8 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
     // ---------------------------------------------------------------------
     if (num_segments > 1) {
         if (DIC_input.debug) {
-            std::cout << "matlab_DIC_analysis: chaining " << num_segments
-                      << " segments back to global reference (frame 1)." << std::endl;
+            NLOG_DEBUG << "matlab_DIC_analysis: chaining " << num_segments
+                      << " segments back to global reference (frame 1).";
         }
         for (difference_type cur_idx = 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
             // Build chain of step displacements from frame 0 to cur_idx.
@@ -5207,8 +5209,8 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
 
             auto combined = add_with_rois(chain_disps, chain_rois, DIC_input.interp_type);
             if (combined.get_roi().get_points() == 0) {
-                std::cerr << "WARNING: matlab_DIC_analysis multi-ref chaining produced empty ROI at frame "
-                          << (cur_idx + 1) << "; keeping segment-local displacement." << std::endl;
+                NLOG_WARN << "WARNING: matlab_DIC_analysis multi-ref chaining produced empty ROI at frame "
+                          << (cur_idx + 1) << "; keeping segment-local displacement.";
                 continue;
             }
             DIC_output.disps[cur_idx - 1] = std::move(combined);
@@ -5231,7 +5233,7 @@ DIC_analysis_output matlab_DIC_analysis_impl(const DIC_analysis_parallel_input& 
             "matlab_DIC_analysis_parallel_step_data.bin" :
             "matlab_DIC_analysis_sequential_step_data.bin";
         save(step_data, step_filename);
-        std::cout << "Step displacement data saved to " << step_filename << std::endl;
+        NLOG_INFO << "Step displacement data saved to " << step_filename;
     }
 
     return DIC_output;
@@ -5269,10 +5271,10 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
         throw std::invalid_argument("DIC_analysis_parallel requires seeds_by_region to be provided.");
     }
     
-    std::cout << std::endl << "Starting seed-based parallel DIC analysis..." << std::endl;
-    std::cout << "Number of regions: " << input.seeds_by_region.size() << std::endl;
-    std::cout << "Cutoff max diffnorm: " << input.cutoff_max_diffnorm << std::endl;
-    std::cout << "Cutoff max corrcoef: " << input.cutoff_max_corrcoef << std::endl;
+    NLOG_INFO << std::endl << "Starting seed-based parallel DIC analysis...";
+    NLOG_INFO << "Number of regions: " << input.seeds_by_region.size();
+    NLOG_INFO << "Cutoff max diffnorm: " << input.cutoff_max_diffnorm;
+    NLOG_INFO << "Cutoff max corrcoef: " << input.cutoff_max_corrcoef;
     
     std::chrono::time_point<std::chrono::system_clock> start_analysis = std::chrono::system_clock::now();
     
@@ -5284,7 +5286,7 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
     DIC_output.units_per_pixel = 1.0;
     
     // PHASE 1: Compute seed parameters for all frames with ROI updates
-    std::cout << "\nPhase 1: Computing seed parameters for all frames..." << std::endl;
+    NLOG_INFO << "\nPhase 1: Computing seed parameters for all frames...";
     
     // Prepare current images
     std::vector<Array2D<double>> A_curs;
@@ -5312,28 +5314,28 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
         throw std::runtime_error("No valid seed parameters could be computed.");
     }
     
-    std::cout << "Successfully computed seed parameters for " << seed_data.size() << " frames" << std::endl;
+    NLOG_INFO << "Successfully computed seed parameters for " << seed_data.size() << " frames";
     
     // PHASE 2: Parallel displacement computation using precomputed seed data
-    std::cout << "\nPhase 2: Computing displacements in parallel..." << std::endl;
+    NLOG_INFO << "\nPhase 2: Computing displacements in parallel...";
     
     size_t safe_batch_size = seed_data.size();
     
     // Use OpenMP for parallel execution (Python uses ThreadPoolExecutor, C++ uses OpenMP)
-    std::cout << "Safe batch size: " << safe_batch_size << std::endl;
-    std::cout << "Number of threads: " << DIC_input.num_threads << std::endl;
-    std::cout << "static_cast<difference_type>(safe_batch_size): " << static_cast<difference_type>(safe_batch_size) << std::endl;
-    std::cout << "Number of threads: " << std::min(static_cast<difference_type>(safe_batch_size), DIC_input.num_threads) << std::endl;
+    NLOG_INFO << "Safe batch size: " << safe_batch_size;
+    NLOG_INFO << "Number of threads: " << DIC_input.num_threads;
+    NLOG_DEBUG << "static_cast<difference_type>(safe_batch_size): " << static_cast<difference_type>(safe_batch_size);
+    NLOG_DEBUG << "Number of threads: " << std::min(static_cast<difference_type>(safe_batch_size), DIC_input.num_threads);
     #pragma omp parallel for num_threads(std::min(static_cast<difference_type>(safe_batch_size), DIC_input.num_threads)) schedule(dynamic)
     for (size_t i = 0; i < safe_batch_size; ++i) {
         difference_type frame_idx = static_cast<difference_type>(i) + 1;
         int thread_id = omp_get_thread_num();
         int total_threads = omp_get_num_threads();
-        printf("Running on thread %d of %d\n", thread_id, total_threads);
+        NLOG_DEBUG << "Running on thread " << thread_id << " of " << total_threads;
         
         #pragma omp critical
         {
-            std::cout << "  Processing frame " << frame_idx << " (parallel)" << std::endl;
+            NLOG_INFO << "  Processing frame " << frame_idx << " (parallel)";
         }
         
         // Use precomputed seed data for this frame
@@ -5345,7 +5347,7 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
         if (frame_data.seed_params_by_region.empty()) {
             #pragma omp critical
             {
-                std::cerr << "  WARNING: No seed params for frame " << frame_idx << ", skipping." << std::endl;
+                NLOG_WARN << "  WARNING: No seed params for frame " << frame_idx << ", skipping.";
             }
             continue;
         }
@@ -5371,7 +5373,7 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
         } catch (const std::exception& e) {
             #pragma omp critical
             {
-                std::cerr << "  ERROR: Frame " << frame_idx << " failed: " << e.what() << std::endl;
+                NLOG_ERROR << "  ERROR: Frame " << frame_idx << " failed: " << e.what();
             }
         }
     }
@@ -5379,7 +5381,7 @@ DIC_analysis_output DIC_analysis_parallel(const DIC_analysis_parallel_input& inp
     // End timer
     std::chrono::time_point<std::chrono::system_clock> end_analysis = std::chrono::system_clock::now();
     std::chrono::duration<double> elapsed_seconds = end_analysis - start_analysis;
-    std::cout << std::endl << "Total parallel DIC analysis time: " << elapsed_seconds.count() << " seconds" << std::endl;
+    NLOG_INFO << std::endl << "Total parallel DIC analysis time: " << elapsed_seconds.count() << " seconds";
     
     return DIC_output;
 }
@@ -5737,9 +5739,9 @@ DIC_analysis_output exact_matlab_DIC_analysis_impl(const DIC_analysis_parallel_i
 
         const difference_type segment_end_idx = ref_idx + difference_type(segment.seeds_by_frame.size());
         if (DIC_input.debug) {
-            std::cout << mode_name << ": processed segment "
+            NLOG_DEBUG << mode_name << ": processed segment "
                       << (ref_idx + 1) << " -> " << (segment_end_idx + 1)
-                      << " (" << segment.seeds_by_frame.size() << " frame(s))." << std::endl;
+                      << " (" << segment.seeds_by_frame.size() << " frame(s)).";
         }
         ++num_segments;
         ref_idx = segment_end_idx;
@@ -5751,10 +5753,9 @@ DIC_analysis_output exact_matlab_DIC_analysis_impl(const DIC_analysis_parallel_i
 
     if (num_segments > 1) {
         if (DIC_input.debug) {
-            std::cout << mode_name << ": chaining " << num_segments
+            NLOG_DEBUG << mode_name << ": chaining " << num_segments
                       << " segments back to global reference (frame 1) "
-                      << "via exact_add_with_rois (MATLAB ncorr_alg_addanalysis)."
-                      << std::endl;
+                      << "via exact_add_with_rois (MATLAB ncorr_alg_addanalysis).";
         }
         for (difference_type cur_idx = 1;
              cur_idx < difference_type(DIC_input.imgs.size());
@@ -5772,10 +5773,10 @@ DIC_analysis_output exact_matlab_DIC_analysis_impl(const DIC_analysis_parallel_i
 
             auto combined = exact_add_with_rois(chain_disps, chain_rois);
             if (combined.get_roi().get_points() == 0) {
-                std::cerr << "WARNING: " << mode_name
+                NLOG_WARN << "WARNING: " << mode_name
                           << " multi-ref chaining produced empty ROI at frame "
                           << (cur_idx + 1)
-                          << "; keeping segment-local displacement." << std::endl;
+                          << "; keeping segment-local displacement.";
                 continue;
             }
             DIC_output.disps[cur_idx - 1] = std::move(combined);
@@ -5792,7 +5793,7 @@ DIC_analysis_output exact_matlab_DIC_analysis_impl(const DIC_analysis_parallel_i
             "exact_matlab_DIC_analysis_parallel_step_data.bin" :
             "exact_matlab_DIC_analysis_sequential_step_data.bin";
         save(step_data, filename);
-        std::cout << "Step displacement data saved to " << filename << std::endl;
+        NLOG_INFO << "Step displacement data saved to " << filename;
     }
 
     return DIC_output;

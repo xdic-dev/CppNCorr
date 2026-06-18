@@ -7,6 +7,7 @@
  */
 
 #include "Image2D.h"
+#include "ncorr/log.h"
 #include <filesystem>
 #include <algorithm>
 #include <numeric>
@@ -364,7 +365,7 @@ ImageProcessor::filter_like_ben(const std::vector<cv::Mat>& input,
     // Compute boundaries from FIRST FILTERED image using percentiles (5th, 95th) if not provided
     if (gs_boundaries == nullptr) {
         boundaries = compute_percentile_boundaries(filtered_images[0], mask, 5.0, 95.0);
-        std::cout << "  Computed filter boundaries: [" << boundaries.first << ", " << boundaries.second << "]" << std::endl;
+        NLOG_INFO << "  Computed filter boundaries: [" << boundaries.first << ", " << boundaries.second << "]";
     } else {
         boundaries = *gs_boundaries;
     }
@@ -431,7 +432,7 @@ std::pair<double, double> ImageProcessor::compute_percentile_boundaries(const cv
     }
     
     if (values.empty()) {
-        std::cerr << "Warning: No pixels in mask for percentile computation" << std::endl;
+        NLOG_WARN << "Warning: No pixels in mask for percentile computation";
         return {0.0, 255.0};
     }
     
@@ -570,7 +571,7 @@ std::vector<Image2D> VideoImporter::import_video(
     
     cv::VideoCapture cap(video_path);
     if (!cap.isOpened()) {
-        std::cerr << "Failed to open video file: " << video_path << std::endl;
+        NLOG_ERROR << "Failed to open video file: " << video_path;
         return images;
     }
     
@@ -579,9 +580,9 @@ std::vector<Image2D> VideoImporter::import_video(
     int frame_end = (params.frame_end < 0) ? total_frames : std::min(params.frame_end, total_frames);
     int frame_jump = std::max(1, params.frame_jump);
     
-    std::cout << "Importing video: " << video_path << std::endl;
-    std::cout << "  Total frames: " << total_frames << std::endl;
-    std::cout << "  Import range: " << frame_start << " to " << frame_end << " (step " << frame_jump << ")" << std::endl;
+    NLOG_INFO << "Importing video: " << video_path;
+    NLOG_INFO << "  Total frames: " << total_frames;
+    NLOG_INFO << "  Import range: " << frame_start << " to " << frame_end << " (step " << frame_jump << ")";
     
     int imported_count = 0;
     for (int f = frame_start; f <= frame_end; f += frame_jump) {
@@ -589,7 +590,7 @@ std::vector<Image2D> VideoImporter::import_video(
         
         cv::Mat frame;
         if (!cap.read(frame)) {
-            std::cerr << "  Warning: Failed to read frame " << f << std::endl;
+            NLOG_WARN << "  Warning: Failed to read frame " << f;
             break;
         }
         
@@ -610,7 +611,7 @@ std::vector<Image2D> VideoImporter::import_video(
     }
     
     cap.release();
-    std::cout << "  Imported " << imported_count << " frames" << std::endl;
+    NLOG_INFO << "  Imported " << imported_count << " frames";
     
     return images;
 }
@@ -629,7 +630,7 @@ std::vector<Image2D> VideoImporter::import_video_to_files(
     
     cv::VideoCapture cap(video_path);
     if (!cap.isOpened()) {
-        std::cerr << "Failed to open video file: " << video_path << std::endl;
+        NLOG_ERROR << "Failed to open video file: " << video_path;
         return images;
     }
     
@@ -638,10 +639,10 @@ std::vector<Image2D> VideoImporter::import_video_to_files(
     int frame_end = (params.frame_end < 0) ? total_frames : std::min(params.frame_end, total_frames);
     int frame_jump = std::max(1, params.frame_jump);
     
-    std::cout << "Importing video to files: " << video_path << std::endl;
-    std::cout << "  Output directory: " << output_dir << std::endl;
-    std::cout << "  Total frames: " << total_frames << std::endl;
-    std::cout << "  Import range: " << frame_start << " to " << frame_end << " (step " << frame_jump << ")" << std::endl;
+    NLOG_INFO << "Importing video to files: " << video_path;
+    NLOG_INFO << "  Output directory: " << output_dir;
+    NLOG_INFO << "  Total frames: " << total_frames;
+    NLOG_INFO << "  Import range: " << frame_start << " to " << frame_end << " (step " << frame_jump << ")";
     
     int imported_count = 0;
     for (int f = frame_start; f <= frame_end; f += frame_jump) {
@@ -649,7 +650,7 @@ std::vector<Image2D> VideoImporter::import_video_to_files(
         
         cv::Mat frame;
         if (!cap.read(frame)) {
-            std::cerr << "  Warning: Failed to read frame " << f << std::endl;
+            NLOG_WARN << "  Warning: Failed to read frame " << f;
             break;
         }
         
@@ -674,7 +675,7 @@ std::vector<Image2D> VideoImporter::import_video_to_files(
     }
     
     cap.release();
-    std::cout << "  Imported and saved " << imported_count << " frames" << std::endl;
+    NLOG_INFO << "  Imported and saved " << imported_count << " frames";
     
     return images;
 }
