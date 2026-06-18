@@ -49,7 +49,7 @@ const char* level_name(Level l);
  * @brief Process-wide singleton logger. All members are thread-safe.
  */
 class Logger {
-public:
+  public:
     static Logger& instance();
 
     void set_console_level(Level l);
@@ -79,7 +79,7 @@ public:
     /// Emit a fully-formed message (trailing newlines are trimmed) at @p l.
     void write(Level l, const char* file, int line, const std::string& msg);
 
-private:
+  private:
     Logger();
     void ensure_env();
 
@@ -104,16 +104,17 @@ void set_debug(bool on);
 bool set_file(const std::string& path);
 
 /// True if a message at @p l would be emitted by any sink.
-inline bool enabled(Level l) { return Logger::instance().enabled(l); }
+inline bool enabled(Level l) {
+    return Logger::instance().enabled(l);
+}
 
 /**
  * @brief RAII stream builder; flushes its accumulated text to the logger when it
  *        is destroyed at the end of the full expression.
  */
 class Stream {
-public:
-    Stream(Level level, const char* file, int line)
-        : level_(level), file_(file), line_(line) {}
+  public:
+    Stream(Level level, const char* file, int line) : level_(level), file_(file), line_(line) {}
     ~Stream() { Logger::instance().write(level_, file_, line_, oss_.str()); }
 
     Stream(const Stream&) = delete;
@@ -130,7 +131,7 @@ public:
         return *this;
     }
 
-private:
+  private:
     Level level_;
     const char* file_;
     int line_;
@@ -141,7 +142,7 @@ private:
 /// statement (glog idiom). @c operator& has lower precedence than @c << but
 /// higher than @c ?:, so the macro is safe inside an unbraced if/else.
 class Voidify {
-public:
+  public:
     Voidify() = default;
     void operator&(Stream&) {}
 };
@@ -151,11 +152,10 @@ public:
 
 // Stream-style logging macros. When the level is disabled, the right-hand side
 // (message construction) is never evaluated.
-#define NLOG_AT(lvl)                                                            \
-    !::ncorr::log::enabled(lvl)                                                 \
-        ? (void)0                                                              \
-        : ::ncorr::log::Voidify() &                                            \
-              ::ncorr::log::Stream((lvl), __FILE__, __LINE__)
+#define NLOG_AT(lvl)            \
+    !::ncorr::log::enabled(lvl) \
+        ? (void)0               \
+        : ::ncorr::log::Voidify() & ::ncorr::log::Stream((lvl), __FILE__, __LINE__)
 
 #define NLOG_TRACE NLOG_AT(::ncorr::log::Level::Trace)
 #define NLOG_DEBUG NLOG_AT(::ncorr::log::Level::Debug)

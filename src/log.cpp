@@ -47,23 +47,30 @@ const char* base_name(const char* path) {
 /// ANSI colour escape for a level (empty when colour is disabled by the caller).
 const char* color_for(Level l) {
     switch (l) {
-        case Level::Trace: return "\033[37m";  // grey
-        case Level::Debug: return "\033[36m";  // cyan
-        case Level::Info: return "\033[32m";   // green
-        case Level::Warn: return "\033[33m";   // yellow
-        case Level::Error: return "\033[31m";  // red
-        default: return "";
+        case Level::Trace:
+            return "\033[37m";  // grey
+        case Level::Debug:
+            return "\033[36m";  // cyan
+        case Level::Info:
+            return "\033[32m";  // green
+        case Level::Warn:
+            return "\033[33m";  // yellow
+        case Level::Error:
+            return "\033[31m";  // red
+        default:
+            return "";
     }
 }
-const char* color_reset() { return "\033[0m"; }
+const char* color_reset() {
+    return "\033[0m";
+}
 
 /// Format "YYYY-MM-DD HH:MM:SS.mmm" for the current wall-clock time.
 std::string timestamp() {
     using namespace std::chrono;
     const auto now = system_clock::now();
     const auto t = system_clock::to_time_t(now);
-    const auto ms =
-        duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
+    const auto ms = duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
     std::tm tm_buf{};
 #if defined(_WIN32)
     localtime_s(&tm_buf, &t);
@@ -105,12 +112,18 @@ Level level_from_string(const std::string& s, Level fallback) {
 
 const char* level_name(Level l) {
     switch (l) {
-        case Level::Trace: return "TRACE";
-        case Level::Debug: return "DEBUG";
-        case Level::Info: return "INFO ";
-        case Level::Warn: return "WARN ";
-        case Level::Error: return "ERROR";
-        case Level::Off: return "OFF  ";
+        case Level::Trace:
+            return "TRACE";
+        case Level::Debug:
+            return "DEBUG";
+        case Level::Info:
+            return "INFO ";
+        case Level::Warn:
+            return "WARN ";
+        case Level::Error:
+            return "ERROR";
+        case Level::Off:
+            return "OFF  ";
     }
     return "?????";
 }
@@ -213,13 +226,15 @@ void Logger::write(Level l, const char* file, int line, const std::string& msg) 
     }
 
     if (file_.is_open() && l >= file_level_) {
-        file_ << timestamp() << " [" << level_name(l) << "] " << fname << ":"
-              << line << " " << text << "\n";
+        file_ << timestamp() << " [" << level_name(l) << "] " << fname << ":" << line << " " << text
+              << "\n";
         file_.flush();
     }
 }
 
-void set_level(Level l) { Logger::instance().set_console_level(l); }
+void set_level(Level l) {
+    Logger::instance().set_console_level(l);
+}
 
 void set_debug(bool on) {
     if (on && Logger::instance().console_level() > Level::Debug) {
