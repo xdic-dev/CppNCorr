@@ -4902,7 +4902,16 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
     segment.seeds_by_frame.reserve(DIC_input.imgs.size() - ref_idx - 1);
 
     const auto A_ref = DIC_input.imgs[ref_idx].get_gs();
-    for (difference_type cur_idx = ref_idx + 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
+
+    // Within a segment the seed schedule uses the SAME fixed predicted_seeds for
+    // every frame (NO intra-segment propagation — see note below), so each
+    // frame's seed optimization is INDEPENDENT. eval_frame() captures the exact
+    // per-frame logic; it is run either serially with early-exit (default) or
+    // speculatively in parallel followed by a serial walk that stops at the
+    // first failure, which reproduces the exact MATLAB segment boundary.
+    struct FrameSeedResult { bool ok; std::vector<SeedParams> seeds; };
+
+    auto eval_frame = [&](difference_type cur_idx) -> FrameSeedResult {
         const auto A_cur = DIC_input.imgs[cur_idx].get_gs();
         auto sr_nloptimizer = details::subregion_nloptimizer(
             A_ref,
@@ -4945,11 +4954,11 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
             SeedParams optimized_seed = SeedParams::from_array(global_result.first);
             const double diffnorm = global_result.first(9);
             const int num_iterations = sr_nloptimizer.get_last_iteration_count();
-            
+
             // MATLAB-style checks: corrcoef, diffnorm, and iteration saturation
             // MATLAB ncorr_abr_alg_seedanalysis.m line 85: (i > 0 && any([convergence_buffer.num_iterations] == cutoff_iteration))
             bool iteration_saturated = (cur_idx > ref_idx + 1) && (num_iterations >= 100);  // Default cutoff_iterations = 100
-            
+
             if (optimized_seed.corrcoef > input.cutoff_max_corrcoef ||
                 diffnorm > input.cutoff_max_diffnorm ||
                 iteration_saturated ||
@@ -4969,14 +4978,45 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
             optimized_seeds.push_back(optimized_seed);
         }
 
-        if (!frame_success || !matlab_seed_positions_are_unique(optimized_seeds, DIC_input.scalefactor)) {
-            if (DIC_input.debug) {
-                std::cout << "matlab_DIC_analysis: stopping seed schedule at frame " << cur_idx << "." << std::endl;
-            }
-            break;
-        }
+        bool ok = frame_success && matlab_seed_positions_are_unique(optimized_seeds, DIC_input.scalefactor);
+        return FrameSeedResult{ ok, std::move(optimized_seeds) };
+    };
 
-        segment.seeds_by_frame.push_back(optimized_seeds);
+    const difference_type first_idx = ref_idx + 1;
+    const difference_type n_cand = difference_type(DIC_input.imgs.size()) - first_idx;
+    const bool par_seedopt = (std::getenv("XDIC_PARALLEL_SEEDOPT") != nullptr);
+
+    if (par_seedopt && DIC_input.num_threads > 1 && n_cand > 1) {
+        // Speculatively evaluate every candidate frame in parallel, then walk
+        // forward and stop at the first failure (identical boundary to serial).
+        const difference_type nthr = std::min(n_cand, DIC_input.num_threads);
+        std::vector<FrameSeedResult> results(static_cast<size_t>(n_cand));
+        #pragma omp parallel for num_threads(nthr) schedule(dynamic)
+        for (difference_type k = 0; k < n_cand; ++k) {
+            results[static_cast<size_t>(k)] = eval_frame(first_idx + k);
+        }
+        for (difference_type k = 0; k < n_cand; ++k) {
+            if (!results[static_cast<size_t>(k)].ok) {
+                if (DIC_input.debug) {
+                    std::cout << "matlab_DIC_analysis: stopping seed schedule at frame "
+                              << (first_idx + k) << "." << std::endl;
+                }
+                break;
+            }
+            segment.seeds_by_frame.push_back(std::move(results[static_cast<size_t>(k)].seeds));
+        }
+    } else {
+        // Original serial early-exit walk (no wasted compute past the boundary).
+        for (difference_type cur_idx = first_idx; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
+            FrameSeedResult r = eval_frame(cur_idx);
+            if (!r.ok) {
+                if (DIC_input.debug) {
+                    std::cout << "matlab_DIC_analysis: stopping seed schedule at frame " << cur_idx << "." << std::endl;
+                }
+                break;
+            }
+            segment.seeds_by_frame.push_back(std::move(r.seeds));
+        }
         // NOTE: Do NOT propagate seeds within a segment.
         // MATLAB uses the SAME fixed pos_seed for ALL frames in a segment
         // (ncorr_abr_alg_seedanalysis.m calls ncorr_alg_calcseeds with the
