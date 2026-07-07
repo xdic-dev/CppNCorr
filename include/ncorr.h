@@ -451,7 +451,15 @@ struct DIC_analysis_parallel_input final {
     // Seed-based parallelization parameters
     double cutoff_max_diffnorm;          // Diffnorm threshold for failure prediction
     double cutoff_max_corrcoef;          // Corrcoef threshold for failure prediction
-    
+
+    // Fixed-step reference updates (MATLAB ncorr step analysis semantics):
+    // when > 0, every seed segment is capped at this many frames, forcing a
+    // reference change (with seed propagation and — in the exact_matlab_*
+    // path — chain composition back to the global reference) every N frames
+    // regardless of seed quality. 0 (default) = segments end only on
+    // seed-quality failure (long-standing behavior).
+    difference_type fixed_step_ref = 0;
+
     // Constructors
     DIC_analysis_parallel_input() : seeds_are_optimized(false), cutoff_max_diffnorm(0.1), cutoff_max_corrcoef(0.5) { }
     
