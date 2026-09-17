@@ -4904,8 +4904,17 @@ matlab_seed_segment matlab_compute_seed_segment(const DIC_analysis_parallel_inpu
 
     segment.seeds_by_frame.reserve(DIC_input.imgs.size() - ref_idx - 1);
 
+    // Fixed-step reference updates: cap the segment at fixed_step_ref frames so
+    // the caller's segment loop performs a reference change (seed propagation +
+    // chain composition) every N frames — MATLAB ncorr step analysis semantics.
+    const difference_type last_idx_excl =
+        input.fixed_step_ref > 0
+            ? std::min(difference_type(DIC_input.imgs.size()),
+                       ref_idx + 1 + input.fixed_step_ref)
+            : difference_type(DIC_input.imgs.size());
+
     const auto A_ref = DIC_input.imgs[ref_idx].get_gs();
-    for (difference_type cur_idx = ref_idx + 1; cur_idx < difference_type(DIC_input.imgs.size()); ++cur_idx) {
+    for (difference_type cur_idx = ref_idx + 1; cur_idx < last_idx_excl; ++cur_idx) {
         const auto A_cur = DIC_input.imgs[cur_idx].get_gs();
         auto sr_nloptimizer = details::subregion_nloptimizer(
             A_ref,
