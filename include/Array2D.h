@@ -19,6 +19,8 @@
 #include <limits>
 #include <string>
 
+#include "ncorr/log.h"
+
 // Non standard libraries
 extern "C" {                    // Blas - for matrix multiplication
     void dgemm_(char*, char*, int*, int*, int*, double*, double*, int*, double*, int*, double*, double*, int*); 
@@ -2613,7 +2615,7 @@ namespace details {
             pointer allocate(difference_type s, const void * = 0) { 
                 pointer ptr = static_cast<pointer>(malloc_function(s * sizeof(value_type))); 
                 if (!ptr) {
-                    std::cerr << "Failed to allocate memory using allocate in fftw_allocator." << std::endl;
+                    NLOG_ERROR << "Failed to allocate memory using allocate in fftw_allocator.";
                     throw std::bad_alloc();
                 }
                 
@@ -3003,9 +3005,7 @@ typename Array2D<T,T_alloc>::pointer Array2D<T,T_alloc>::allocate(difference_typ
         ptr_new = alloc.allocate(s_init);
     } catch (std::bad_alloc &e) {
         // Bad alloc doesn't have a what() message, so just add one to terminal
-        std::cerr << "---------------------------------------------" << std::endl 
-                  << "Error: failed to allocate memory for Array2D." << std::endl
-                  << "---------------------------------------------" << std::endl;
+        NLOG_ERROR << "Error: failed to allocate memory for Array2D.";
         throw;
     }
 

@@ -9,6 +9,7 @@ on:
     branches: [main, newversion]
   pull_request:
     branches: [main, newversion]
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
@@ -82,13 +83,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install clang-format
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-format
+      - name: Install clang-format (pinned)
+        # Pin the exact version: apt ships different clang-format majors across
+        # runner images, which disagree with the version used to format the tree.
+        run: python3 -m pip install --quiet "clang-format==18.1.8"
 
       - name: clang-format --dry-run on changed C/C++ files
         run: |
+          # Always use the pinned pip binary explicitly (the runner image also
+          # ships a different-major clang-format on PATH).
+          CF="$(python3 -c 'import clang_format, os; print(os.path.join(os.path.dirname(clang_format.__file__), "data", "bin", "clang-format"))')"
+          "$CF" --version
           # Determine the base ref to diff against.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="origin/${{ github.base_ref }}"
@@ -107,4 +112,56 @@ jobs:
           fi
           echo "Linting:"; echo "$CHANGED"
           # --dry-run --Werror fails if any file is not formatted.
-          clang-format --dry-run --Werror $CHANGED
+          "$CF" --dry-run --Werror $CHANGED
+
+  coverage:
+    name: Coverage (gcov → Codecov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake build-essential \
+            libopencv-dev \
+            libfftw3-dev \
+            libsuitesparse-dev \
+            liblapack-dev libblas-dev \
+            libomp-dev \
+            gcovr
+
+      - name: Configure (coverage instrumentation)
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="--coverage -O0 -g"
+          -DCMAKE_C_FLAGS="--coverage -O0 -g"
+          -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run tests
+        working-directory: build
+        run: ctest --output-on-failure || echo "ctest returned non-zero (continuing for coverage)"
+
+      - name: Generate coverage report (Cobertura XML)
+        run: >
+          gcovr --root .
+          --exclude 'build/'
+          --exclude 'test/'
+          --exclude 'tests/'
+          --xml-pretty --output coverage.xml
+          --print-summary || true
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: cppncorr-coverage
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+

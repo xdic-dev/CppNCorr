@@ -32,7 +32,7 @@ namespace ncorr {
  * @brief In-memory representation of a parsed INI file.
  */
 class IniFile {
-public:
+  public:
     /// Construct an empty INI store.
     IniFile() = default;
 
@@ -63,8 +63,8 @@ public:
             // Section header: [name]
             if (content.front() == '[') {
                 if (content.back() != ']') {
-                    throw std::runtime_error("INI parse error at line " +
-                        std::to_string(line_no) + ": malformed section header");
+                    throw std::runtime_error("INI parse error at line " + std::to_string(line_no) +
+                                             ": malformed section header");
                 }
                 section = trim(content.substr(1, content.size() - 2));
                 continue;
@@ -73,14 +73,14 @@ public:
             // key = value
             std::size_t eq = content.find('=');
             if (eq == std::string::npos) {
-                throw std::runtime_error("INI parse error at line " +
-                    std::to_string(line_no) + ": expected 'key = value'");
+                throw std::runtime_error("INI parse error at line " + std::to_string(line_no) +
+                                         ": expected 'key = value'");
             }
             std::string key = trim(content.substr(0, eq));
             std::string value = unquote(trim(content.substr(eq + 1)));
             if (key.empty()) {
-                throw std::runtime_error("INI parse error at line " +
-                    std::to_string(line_no) + ": empty key");
+                throw std::runtime_error("INI parse error at line " + std::to_string(line_no) +
+                                         ": empty key");
             }
             std::string full_key = section.empty() ? key : (section + "." + key);
             values_[full_key] = value;
@@ -90,9 +90,7 @@ public:
     }
 
     /// @return true if a value exists for @p key.
-    bool has(const std::string& key) const {
-        return values_.find(key) != values_.end();
-    }
+    bool has(const std::string& key) const { return values_.find(key) != values_.end(); }
 
     /// @return the raw string value for @p key, or @p fallback if absent.
     std::string get(const std::string& key, const std::string& fallback = "") const {
@@ -107,8 +105,8 @@ public:
         try {
             return std::stoi(it->second);
         } catch (const std::exception&) {
-            throw std::runtime_error("INI value for '" + key +
-                "' is not a valid integer: '" + it->second + "'");
+            throw std::runtime_error("INI value for '" + key + "' is not a valid integer: '" +
+                                     it->second + "'");
         }
     }
 
@@ -119,8 +117,8 @@ public:
         try {
             return std::stod(it->second);
         } catch (const std::exception&) {
-            throw std::runtime_error("INI value for '" + key +
-                "' is not a valid number: '" + it->second + "'");
+            throw std::runtime_error("INI value for '" + key + "' is not a valid number: '" +
+                                     it->second + "'");
         }
     }
 
@@ -132,14 +130,14 @@ public:
         std::string v = to_lower(it->second);
         if (v == "true" || v == "1" || v == "yes" || v == "on") return true;
         if (v == "false" || v == "0" || v == "no" || v == "off") return false;
-        throw std::runtime_error("INI value for '" + key +
-            "' is not a valid boolean: '" + it->second + "'");
+        throw std::runtime_error("INI value for '" + key + "' is not a valid boolean: '" +
+                                 it->second + "'");
     }
 
     /// @return the full key/value map (for iteration / diagnostics).
     const std::map<std::string, std::string>& values() const { return values_; }
 
-private:
+  private:
     static std::string to_lower(std::string s) {
         for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return s;
@@ -157,8 +155,10 @@ private:
         bool in_single = false, in_double = false;
         for (std::size_t i = 0; i < s.size(); ++i) {
             char c = s[i];
-            if (c == '\'' && !in_double) in_single = !in_single;
-            else if (c == '"' && !in_single) in_double = !in_double;
+            if (c == '\'' && !in_double)
+                in_single = !in_single;
+            else if (c == '"' && !in_single)
+                in_double = !in_double;
             else if ((c == '#' || c == ';') && !in_single && !in_double) {
                 return s.substr(0, i);
             }
@@ -169,8 +169,7 @@ private:
     // Strip a single matching pair of surrounding quotes, if present.
     static std::string unquote(const std::string& s) {
         if (s.size() >= 2 &&
-            ((s.front() == '"' && s.back() == '"') ||
-             (s.front() == '\'' && s.back() == '\''))) {
+            ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\''))) {
             return s.substr(1, s.size() - 2);
         }
         return s;

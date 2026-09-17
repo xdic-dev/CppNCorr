@@ -34,8 +34,7 @@ namespace {
 // clone() decouples the cv::Mat from the caller's storage so the session can
 // outlive the original buffer.
 cv::Mat to_owning_mat(const ImageBuffer& b) {
-    return cv::Mat(b.height, b.width, CV_8UC(b.channels),
-                   const_cast<std::uint8_t*>(b.data))
+    return cv::Mat(b.height, b.width, CV_8UC(b.channels), const_cast<std::uint8_t*>(b.data))
         .clone();
 }
 
@@ -59,8 +58,7 @@ struct NcorrSession::Impl {
     explicit Impl(const SessionConfig& cfg) : config(cfg) {}
 };
 
-NcorrSession::NcorrSession(const SessionConfig& config)
-    : impl_(std::make_unique<Impl>(config)) {}
+NcorrSession::NcorrSession(const SessionConfig& config) : impl_(std::make_unique<Impl>(config)) {}
 
 NcorrSession::~NcorrSession() = default;
 
@@ -83,12 +81,10 @@ void NcorrSession::set_reference(const ImageBuffer& ref) {
 
 void NcorrSession::set_roi(const ImageBuffer& roi_mask) {
     if (!roi_mask.valid()) {
-        throw std::invalid_argument(
-            "NcorrSession::set_roi: invalid ROI mask ImageBuffer.");
+        throw std::invalid_argument("NcorrSession::set_roi: invalid ROI mask ImageBuffer.");
     }
     if (impl_->has_reference &&
-        (roi_mask.width != impl_->ref_width ||
-         roi_mask.height != impl_->ref_height)) {
+        (roi_mask.width != impl_->ref_width || roi_mask.height != impl_->ref_height)) {
         throw std::invalid_argument(
             "NcorrSession::set_roi: ROI mask geometry does not match the "
             "reference frame.");
@@ -113,8 +109,7 @@ DICResult NcorrSession::process_frame(const ImageBuffer& def) {
         return result;
     }
     if (def.width != impl_->ref_width || def.height != impl_->ref_height) {
-        result.message =
-            "process_frame: deformed frame geometry does not match reference.";
+        result.message = "process_frame: deformed frame geometry does not match reference.";
         return result;
     }
 
@@ -123,21 +118,18 @@ DICResult NcorrSession::process_frame(const ImageBuffer& def) {
 
         ROI2D roi = impl_->has_roi
                         ? impl_->roi
-                        : ROI2D(Array2D<bool>(impl_->ref_height,
-                                              impl_->ref_width, true));
+                        : ROI2D(Array2D<bool>(impl_->ref_height, impl_->ref_width, true));
 
         std::vector<Image2D> imgs{impl_->ref_img, def_img};
 
-        DIC_analysis_input in(
-            imgs, roi, impl_->config.scalefactor,
-            INTERP::QUINTIC_BSPLINE_PRECOMPUTE, SUBREGION::CIRCLE,
-            impl_->config.subregion_radius, impl_->config.num_threads,
-            DIC_analysis_config::NO_UPDATE, impl_->config.debug);
+        DIC_analysis_input in(imgs, roi, impl_->config.scalefactor,
+                              INTERP::QUINTIC_BSPLINE_PRECOMPUTE, SUBREGION::CIRCLE,
+                              impl_->config.subregion_radius, impl_->config.num_threads,
+                              DIC_analysis_config::NO_UPDATE, impl_->config.debug);
 
         DIC_analysis_output out = DIC_analysis(in);
         if (out.disps.empty()) {
-            result.message =
-                "process_frame: DIC produced no displacement fields.";
+            result.message = "process_frame: DIC produced no displacement fields.";
             return result;
         }
 
@@ -161,12 +153,9 @@ DICResult NcorrSession::process_frame(const ImageBuffer& def) {
         for (int i = 0; i < h; ++i) {
             for (int j = 0; j < w; ++j) {
                 if (i < mask.height() && j < mask.width() && mask(i, j)) {
-                    const std::size_t idx =
-                        static_cast<std::size_t>(i) * w + j;
-                    if (i < u_arr.height() && j < u_arr.width())
-                        result.u[idx] = u_arr(i, j);
-                    if (i < v_arr.height() && j < v_arr.width())
-                        result.v[idx] = v_arr(i, j);
+                    const std::size_t idx = static_cast<std::size_t>(i) * w + j;
+                    if (i < u_arr.height() && j < u_arr.width()) result.u[idx] = u_arr(i, j);
+                    if (i < v_arr.height() && j < v_arr.width()) result.v[idx] = v_arr(i, j);
                     if (i < cc_arr.height() && j < cc_arr.width())
                         result.corrcoef[idx] = cc_arr(i, j);
                 }
@@ -178,8 +167,7 @@ DICResult NcorrSession::process_frame(const ImageBuffer& def) {
         return result;
     } catch (const std::exception& e) {
         result.valid = false;
-        result.message =
-            std::string("process_frame: DIC failed: ") + e.what();
+        result.message = std::string("process_frame: DIC failed: ") + e.what();
         return result;
     }
 }

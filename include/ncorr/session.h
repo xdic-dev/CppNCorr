@@ -61,14 +61,10 @@ struct ImageBuffer {
         : data(data_), width(width_), height(height_), channels(channels_) {}
 
     /// @return true if the buffer is non-null and has positive dimensions.
-    bool valid() const {
-        return data != nullptr && width > 0 && height > 0 && channels > 0;
-    }
+    bool valid() const { return data != nullptr && width > 0 && height > 0 && channels > 0; }
 
     /// @return total number of bytes the buffer is expected to span.
-    std::size_t size_bytes() const {
-        return static_cast<std::size_t>(width) * height * channels;
-    }
+    std::size_t size_bytes() const { return static_cast<std::size_t>(width) * height * channels; }
 };
 
 /**
@@ -140,7 +136,7 @@ struct SessionConfig {
  * (and correlation coefficient) on the reduced analysis grid.
  */
 class NcorrSession {
-public:
+  public:
     /**
      * @brief Construct a session with the given configuration.
      * @param config Tuneable DIC parameters (defaults match Config).
@@ -192,7 +188,7 @@ public:
     /// @return true once a valid reference frame has been set.
     bool has_reference() const;
 
-private:
+  private:
     // PIMPL: hides internal ncorr engine types from this public header.
     struct Impl;
     std::unique_ptr<Impl> impl_;

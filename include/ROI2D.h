@@ -11,6 +11,7 @@
 #include <stack>
 
 #include "Array2D.h"
+#include "ncorr/log.h"
 
 
 namespace ncorr {    
@@ -442,7 +443,7 @@ T_container& fill(T_container &A, const Array2D<double>&boundary, const T &val) 
     // Check for empty boundary first - this is not an error, just nothing to fill
     if (boundary.empty() || boundary.height() == 0) {
         // If boundary is empty just return  
-        std::cout << "Warning: The boundary is empty or the height is equal 0 - just nothing to fill" << std::endl;
+        NLOG_WARN << "Warning: The boundary is empty or the height is equal 0 - just nothing to fill";
         return A;
     }
     
